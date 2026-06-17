@@ -38,10 +38,10 @@ SecureOps Assistant helps junior security analysts at manufacturing companies na
 
 | Member | GitHub | Branch | Responsibility |
 |--------|--------|--------|----------------|
-| Sourabha Kallapur | [@SK](https://github.com/SK) | `llm-and-agentic` | LLM integration, LangGraph agent, system prompt engine, Gradio interface |
-| Jay Sadhu | [@Jay-Sadhu](https://github.com/Jay-Sadhu) | `rag-layer` | Corpus ingestion, chunking strategy, ChromaDB + BM25 indexing |
-| Sana Shikalgar | [@Sana-Shikalgar](https://github.com/Sana-Shikalgar) | `rag-layer` | Hybrid retrieval (dense + BM25 + RRF), cross-encoder reranker, retrieval evaluation |
-| Kaveen Prabodhya | [@kaveenprabodhya](https://github.com/kaveenprabodhya) | `output-layer` | Output schema, security layer (input/chunk scanner, spotlighting, output validator), RAGAS evaluation harness, pitch deck |
+| Sourabha Kallapur | [@SK](https://github.com/SK) | `llm-and-agentic` | LLM integration and Agentic Layer |
+| Jay Sadhu | [@Jay-Sadhu](https://github.com/Jay-Sadhu) | `rag-layer` | RAG Layer |
+| Sana Shikalgar | [@Sana-Shikalgar](https://github.com/Sana-Shikalgar) | `rag-layer` | RAG Layer |
+| Kaveen Prabodhya | [@kaveenprabodhya](https://github.com/kaveenprabodhya) | `output-layer` | Output Layer |
 
 ---
 
