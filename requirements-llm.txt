@@ -1,0 +1,9 @@
+google-generativeai
+huggingface-hub
+langgraph
+langchain-core
+langchain-google-genai
+pydantic>=2.0
+pytest
+pytest-asyncio
+python-dotenv
