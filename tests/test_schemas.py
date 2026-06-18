@@ -177,3 +177,12 @@ def test_agent_state_retrieved_chunks_accepts_chunk_dicts():
 
     assert len(state["retrieved_chunks"]) == 1
     assert state["retrieved_chunks"][0]["text"] == "firewall controls"
+
+
+def test_agentstate_defaults_has_all_required_keys():
+    from src.schemas import AGENTSTATE_DEFAULTS, AgentState
+
+    required_keys = AgentState.__annotations__.keys()
+    for key in required_keys:
+        assert key in AGENTSTATE_DEFAULTS, \
+            f"AGENTSTATE_DEFAULTS missing key: {key}"
