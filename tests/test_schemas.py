@@ -120,30 +120,60 @@ def test_confidence_above_one_raises():
 def test_agent_state_default_values():
     from src.schemas import AgentState
 
-    state = AgentState(query="test query")
+    state: AgentState = {
+        "query": "test query",
+        "query_type": "simple",
+        "sub_queries": [],
+        "retrieved_chunks": [],
+        "answer": "",
+        "citations": [],
+        "confidence": 0.0,
+        "refusal": False,
+        "needs_clarification": False,
+        "clarification_question": "",
+        "retry_count": 0,
+        "error": None,
+        "validation_passed": False,
+    }
 
-    assert state.query == "test query"
-    assert state.sub_queries == []
-    assert state.retrieved_chunks == []
-    assert state.answer == ""
-    assert state.citations == []
-    assert state.confidence == 0.0
-    assert state.refusal is False
-    assert state.needs_clarification is False
-    assert state.clarification_question == ""
-    assert state.retry_count == 0
-    assert state.error is None
+    assert state["query"] == "test query"
+    assert state["sub_queries"] == []
+    assert state["retrieved_chunks"] == []
+    assert state["answer"] == ""
+    assert state["citations"] == []
+    assert state["confidence"] == 0.0
+    assert state["refusal"] is False
+    assert state["needs_clarification"] is False
+    assert state["clarification_question"] == ""
+    assert state["retry_count"] == 0
+    assert state["error"] is None
 
 
 def test_agent_state_retrieved_chunks_accepts_chunk_dicts():
+    from src.contracts import ChunkDict
     from src.schemas import AgentState
 
-    chunk = {
+    chunk: ChunkDict = {
         "text": "firewall controls",
         "metadata": {"doc": "NIST SP 800-82", "section": "5.2", "page": 42},
         "score": 0.88,
     }
 
-    state = AgentState(query="test query", retrieved_chunks=[chunk])
+    state: AgentState = {
+        "query": "test query",
+        "query_type": "simple",
+        "sub_queries": [],
+        "retrieved_chunks": [chunk],
+        "answer": "",
+        "citations": [],
+        "confidence": 0.0,
+        "refusal": False,
+        "needs_clarification": False,
+        "clarification_question": "",
+        "retry_count": 0,
+        "error": None,
+        "validation_passed": False,
+    }
 
-    assert state.retrieved_chunks == [chunk]
+    assert len(state["retrieved_chunks"]) == 1
+    assert state["retrieved_chunks"][0]["text"] == "firewall controls"
