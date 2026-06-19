@@ -260,3 +260,12 @@ def test_llm_router_generate_json_uses_primary(mocker):
     result = router.generate_json("classification prompt")
 
     assert result == {"query_type": "simple"}
+
+
+def test_strip_markdown_json_fence_handles_whitespace_variations():
+    from src.llm import _strip_markdown_json_fence
+
+    assert _strip_markdown_json_fence(
+        '```json\n  {"a": 1}  \n```'
+    ).strip() == '{"a": 1}'
+    assert _strip_markdown_json_fence('{"a": 1}') == '{"a": 1}'
