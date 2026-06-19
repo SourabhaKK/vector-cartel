@@ -406,3 +406,35 @@ def test_route_by_validation_passed_when_validation_true():
     state = make_state(validation_passed=True, retry_count=0)
 
     assert route_by_validation(state) == "passed"
+
+
+# ── EXTRACTED HELPER CONTRACTS ─────────────────────────────────────
+
+
+def test_token_overlap_empty_answer_returns_zero():
+    from src.agent import _token_overlap
+
+    assert _token_overlap("", [NIST_CHUNK]) == 0.0
+
+
+def test_token_overlap_full_match_returns_one():
+    from src.agent import _token_overlap
+
+    chunk = {"text": "test", "metadata": {}, "score": 1.0}
+
+    assert _token_overlap("test", [chunk]) == 1.0
+
+
+def test_agent_imports_prompts_module_qualified():
+    """
+    Regression test: agent.py must use 'import src.prompts as prompts'
+    not 'from src.prompts import build_x'. Direct imports break
+    mocker.patch('src.prompts.build_x') spy tests silently.
+    """
+    import inspect
+
+    import src.agent as agent_module
+
+    source = inspect.getsource(agent_module)
+    assert "import src.prompts as prompts" in source
+    assert "from src.prompts import" not in source
