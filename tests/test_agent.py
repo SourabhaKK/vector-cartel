@@ -674,3 +674,20 @@ def test_run_agent_validation_retry_calls_synthesize_twice_max(mocker):
 
     assert mock_llm.generate.call_count == 2
     assert result.refusal is False
+
+
+def test_routing_maps_have_correct_keys():
+    from src.agent import (
+        CLASSIFY_ROUTING_MAP,
+        VERIFY_ROUTING_MAP,
+        VALIDATE_ROUTING_MAP,
+    )
+
+    assert set(CLASSIFY_ROUTING_MAP.keys()) == {
+        "simple",
+        "multi_hop",
+        "out_of_scope",
+        "ambiguous",
+    }
+    assert set(VERIFY_ROUTING_MAP.keys()) == {"sufficient", "insufficient"}
+    assert set(VALIDATE_ROUTING_MAP.keys()) == {"passed", "retry"}

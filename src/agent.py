@@ -43,6 +43,7 @@ import re
 from typing import Callable, Dict, List
 
 from langgraph.graph import END, StateGraph
+from langgraph.graph.state import CompiledStateGraph
 
 import src.prompts as prompts
 from src.schemas import AgentState, Citation
@@ -380,12 +381,16 @@ def _retrieve_for_all_sub_queries(
     """
     Calls retrieval_fn once per sub-query and flattens results.
 
-    For simple queries, sub_queries contains exactly the original
-    query (set by run_agent's init), so this still results in
-    exactly 1 call.
+    CALL COUNT CONTRACT (tested explicitly in test_agent.py):
+      simple path:    sub_queries == [original_query] (set by
+                       run_agent's initial_state) -> 1 call
+      multi_hop path: sub_queries == 2-3 items from decompose_query
+                       -> 2-3 calls
 
-    For multi_hop queries, sub_queries contains 2-3 items from
-    decompose_query, resulting in 2-3 calls.
+    This function is the single place retrieval_fn gets called
+    in the graph — both simple and multi_hop route through the
+    same "retrieve" node, differentiated only by how many items
+    are in state["sub_queries"] when this function runs.
     """
     sub_queries = state.get("sub_queries") or [state["query"]]
     all_chunks: List[ChunkDict] = []
@@ -394,75 +399,137 @@ def _retrieve_for_all_sub_queries(
     return all_chunks
 
 
-def build_agent_graph(llm_router: LLMRouter, retrieval_fn: Callable = None):
+CLASSIFY_ROUTING_MAP = {
+    "simple": "retrieve",
+    "multi_hop": "decompose",
+    "out_of_scope": "refuse",
+    "ambiguous": "clarify",
+}
+
+VERIFY_ROUTING_MAP = {
+    "sufficient": "synthesize",
+    "insufficient": "rewrite",
+}
+
+VALIDATE_ROUTING_MAP = {
+    "passed": END,
+    "retry": "increment_retry",
+}
+
+
+def _make_classify_node(llm_router: LLMRouter) -> Callable:
+    def node(state: AgentState) -> Dict:
+        return classify_query(state, llm_router)
+
+    return node
+
+
+def _make_decompose_node(llm_router: LLMRouter) -> Callable:
+    def node(state: AgentState) -> Dict:
+        return decompose_query(state, llm_router)
+
+    return node
+
+
+def _make_clarify_node(llm_router: LLMRouter) -> Callable:
+    def node(state: AgentState) -> Dict:
+        return handle_clarification(state, llm_router)
+
+    return node
+
+
+def _make_synthesize_node(llm_router: LLMRouter) -> Callable:
+    def node(state: AgentState) -> Dict:
+        return synthesize_answer(state, llm_router)
+
+    return node
+
+
+def _make_retrieve_node(retrieval_fn: Callable) -> Callable:
+    def node(state: AgentState) -> Dict:
+        return {"retrieved_chunks": _retrieve_for_all_sub_queries(state, retrieval_fn)}
+
+    return node
+
+
+def build_agent_graph(
+    llm_router: LLMRouter, retrieval_fn: Callable = None
+) -> CompiledStateGraph:
     """
     Builds and compiles the SecureOps Assistant LangGraph.
 
-    If retrieval_fn is not provided, falls back to _stub_retrieve
-    (always returns empty chunks) — used only in tests that do not
-    care about actual retrieval behaviour.
+    TOPOLOGY:
+      classify --[route_by_query_type]-->
+        "simple"        -> retrieve -> verify -> synthesize -> validate
+        "multi_hop"     -> decompose -> retrieve -> verify ->
+                            synthesize -> validate
+        "out_of_scope"  -> refuse -> END
+        "ambiguous"     -> clarify -> END
+
+      verify --[stub, always "sufficient" for now]-->
+        "sufficient"    -> synthesize
+        "insufficient"  -> rewrite -> retrieve (loop back)
+        NOTE: "insufficient" path is currently unreachable —
+        _stub_verify always returns validation_passed=True.
+        This activates once rag-layer replaces _stub_verify
+        with real RETRIEVAL_CONFIDENCE_THRESHOLD logic.
+
+      validate --[route_by_validation]-->
+        "passed" -> END
+        "retry"  -> increment_retry_count -> synthesize (loop back,
+                    max MAX_NODE_RETRIES times, see src.contracts)
+
+    RAG-LAYER INTEGRATION POINT:
+      If retrieval_fn is None, falls back to _stub_retrieve
+      (always returns empty chunks) — used only by tests that
+      don't exercise real retrieval behaviour. In production,
+      rag-layer's retrieval_fn is injected here when dev merges.
+
+    Args:
+        llm_router: The LLMRouter instance all LLM-calling nodes
+                    will use (classify, decompose, clarify, synthesize).
+        retrieval_fn: Optional. Matches the RetrievalFn protocol
+                     from src.contracts. Falls back to stub if None.
+
+    Returns:
+        A compiled LangGraph CompiledStateGraph with .invoke(state).
     """
     graph = StateGraph(AgentState)
 
-    graph.add_node("classify", lambda s: classify_query(s, llm_router))
-    graph.add_node("decompose", lambda s: decompose_query(s, llm_router))
+    graph.add_node("classify", _make_classify_node(llm_router))
+    graph.add_node("decompose", _make_decompose_node(llm_router))
     graph.add_node("refuse", handle_refusal)
-    graph.add_node("clarify", lambda s: handle_clarification(s, llm_router))
+    graph.add_node("clarify", _make_clarify_node(llm_router))
 
-    actual_retrieve = retrieval_fn if retrieval_fn else _stub_retrieve
     if retrieval_fn:
-        graph.add_node(
-            "retrieve",
-            lambda s: {
-                "retrieved_chunks": _retrieve_for_all_sub_queries(
-                    s, actual_retrieve
-                )
-            },
-        )
+        graph.add_node("retrieve", _make_retrieve_node(retrieval_fn))
     else:
         graph.add_node("retrieve", _stub_retrieve)
 
     graph.add_node("verify", _stub_verify)
     graph.add_node("rewrite", _stub_rewrite)
-    graph.add_node("synthesize", lambda s: synthesize_answer(s, llm_router))
+    graph.add_node("synthesize", _make_synthesize_node(llm_router))
     graph.add_node("validate", validate_citations)
     graph.add_node("increment_retry", increment_retry_count)
 
     graph.set_entry_point("classify")
 
     graph.add_conditional_edges(
-        "classify",
-        route_by_query_type,
-        {
-            "simple": "retrieve",
-            "multi_hop": "decompose",
-            "out_of_scope": "refuse",
-            "ambiguous": "clarify",
-        },
+        "classify", route_by_query_type, CLASSIFY_ROUTING_MAP
     )
 
     graph.add_edge("decompose", "retrieve")
     graph.add_edge("retrieve", "verify")
 
     graph.add_conditional_edges(
-        "verify",
-        lambda s: "sufficient",
-        {
-            "sufficient": "synthesize",
-            "insufficient": "rewrite",
-        },
+        "verify", lambda s: "sufficient", VERIFY_ROUTING_MAP
     )
 
     graph.add_edge("rewrite", "retrieve")
     graph.add_edge("synthesize", "validate")
 
     graph.add_conditional_edges(
-        "validate",
-        route_by_validation,
-        {
-            "passed": END,
-            "retry": "increment_retry",
-        },
+        "validate", route_by_validation, VALIDATE_ROUTING_MAP
     )
     graph.add_edge("increment_retry", "synthesize")
 
@@ -476,10 +543,24 @@ def run_agent(query: str, llm_router: LLMRouter, retrieval_fn: Callable):
     """
     Runs the full SecureOps Assistant agent graph for a single query.
 
-    Initialises AgentState with defaults, sets sub_queries to
-    [query] so the simple path retrieves exactly once via
-    _retrieve_for_all_sub_queries, builds and invokes the graph,
-    and converts the final state into a SecureOpsAnswer.
+    Initialises AgentState with sub_queries=[query] so that the
+    simple path calls retrieval_fn exactly once via
+    _retrieve_for_all_sub_queries (see that function's docstring
+    for the full call-count contract).
+
+    FIELD MAPPING NOTE — clarification fallback:
+    AgentState has needs_clarification/clarification_question
+    fields, but SecureOpsAnswer has no equivalent field (by
+    design — SecureOpsAnswer is the external-facing schema,
+    AgentState is internal). When the ambiguous path is taken,
+    this function falls back to clarification_question as the
+    answer text, since SecureOpsAnswer.answer is the only field
+    that reaches the caller. Gradio (src/gradio_demo.py, not
+    yet built) will be responsible for displaying this
+    distinctly from a normal answer if needed.
+
+    Returns:
+        SecureOpsAnswer with sources_used computed from citations.
     """
     from src.schemas import AGENTSTATE_DEFAULTS, SecureOpsAnswer
 
