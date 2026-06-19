@@ -40,11 +40,18 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Dict, List
+from typing import Callable, Dict, List
+
+from langgraph.graph import END, StateGraph
 
 import src.prompts as prompts
 from src.schemas import AgentState, Citation
-from src.contracts import ChunkDict, get_chunk_doc, get_chunk_section
+from src.contracts import (
+    ChunkDict,
+    MAX_NODE_RETRIES,
+    get_chunk_doc,
+    get_chunk_section,
+)
 from src.llm import LLMRouter, JSONParseError
 
 logger = logging.getLogger(__name__)
@@ -214,40 +221,54 @@ def _parse_citations(answer_text: str) -> List[Citation]:
 
 def validate_citations(state: AgentState) -> Dict:
     """
-    Checks whether the generated answer is grounded in retrieved
-    context, using token overlap rather than a second LLM call
-    (see module docstring for rationale).
+    Checks whether the answer is grounded in retrieved chunks via
+    token overlap. Does NOT manage retry_count — that is owned by
+    route_by_validation, which decides whether to retry and
+    increment_retry_count, which increments retry_count only when
+    actually routing back to synthesize_answer. This keeps the
+    "did validation pass" decision (here) separate from the "how
+    many retries have happened" lifecycle (there), avoiding the
+    ordering bug where both functions independently touched
+    retry_count.
 
-    Reads: state["answer"], state["retrieved_chunks"],
-           state["retry_count"]
-    Returns: {"validation_passed": bool} and, on failure,
-             {"retry_count": int} incremented by 1
+    Reads: state["answer"], state["retrieved_chunks"]
+    Returns: {"validation_passed": bool}
     LLM calls: 0
     Prompt calls: none
 
-    Skips the overlap check entirely for refusal answers (the
-    refusal string is never "ungrounded" — there's nothing to
-    ground) and once retry_count has hit MAX_NODE_RETRIES, to
-    avoid an infinite retry loop.
+    Skips the overlap check entirely for refusal answers — the
+    refusal string is never "ungrounded", there's nothing to ground.
 
     Called by: synthesize_answer's downstream edge. Routes via
-    route_by_validation to either END or back to synthesize_answer.
+    route_by_validation to either END or increment_retry_count.
     """
     if state["answer"].strip() == REFUSAL_STRING:
         return {"validation_passed": True}
 
-    if state["retry_count"] >= 1:
-        return {"validation_passed": True}
-
     overlap = _token_overlap(state["answer"], state["retrieved_chunks"])
+    return {"validation_passed": overlap >= 0.25}
 
-    if overlap >= 0.25:
-        return {"validation_passed": True}
-    else:
-        return {
-            "validation_passed": False,
-            "retry_count": state["retry_count"] + 1,
-        }
+
+def increment_retry_count(state: AgentState) -> Dict:
+    """
+    Increments retry_count by 1. Called only on the retry path,
+    between validate_citations failing and synthesize_answer
+    being called again. This is the single place retry_count
+    changes — owning the increment here (not in validate_citations)
+    means route_by_validation always reads the count from BEFORE
+    the current attempt, avoiding the off-by-one where a node's
+    own increment caused the router to immediately treat the
+    first failure as already-at-limit.
+
+    Reads: state["retry_count"]
+    Returns: {"retry_count": int} incremented by 1
+    LLM calls: 0
+    Prompt calls: none
+
+    Called by: route_by_validation's "retry" edge, before
+    synthesize_answer runs again.
+    """
+    return {"retry_count": state["retry_count"] + 1}
 
 
 def _token_overlap(answer: str, chunks: List[ChunkDict]) -> float:
@@ -291,7 +312,13 @@ def route_by_query_type(state: AgentState) -> str:
 
 def route_by_validation(state: AgentState) -> str:
     """
-    Decides whether to retry synthesize_answer or finish.
+    Routes based on validation_passed and current retry_count.
+    retry_count here reflects retries already completed BEFORE
+    this validation check — it is incremented by
+    increment_retry_count only on the retry path, after this
+    function has made its decision. This ordering means the
+    first failure sees retry_count=0 (not yet incremented) and
+    correctly routes to retry.
 
     Reads: state["validation_passed"], state["retry_count"]
     Returns: "retry" if validation failed and under MAX_NODE_RETRIES,
@@ -303,6 +330,173 @@ def route_by_validation(state: AgentState) -> str:
     """
     if state["validation_passed"]:
         return "passed"
-    if state["retry_count"] >= 1:
+    if state["retry_count"] >= MAX_NODE_RETRIES:
         return "passed"
     return "retry"
+
+
+def _stub_retrieve(state: AgentState) -> Dict:
+    """
+    TEMPORARY STUB — replaced when rag-layer branch merges.
+
+    In tests, the real retrieval_fn is injected via run_agent's
+    retrieval_fn parameter and bound into the graph at build time.
+    This stub only fires if no retrieval_fn was injected — it
+    should never be reached in correctly-wired tests or production.
+
+    Real implementation (rag-layer, src/retrieval.py) does:
+      1. Embed query with BAAI/bge-small-en-v1.5
+      2. ChromaDB cosine similarity search -> top 20
+      3. BM25 keyword search -> top 20
+      4. RRF fusion -> merged ranked list
+      5. Cross-encoder reranker -> top 5
+      6. Validate each chunk with validate_chunk() from src.contracts
+      7. Return List[ChunkDict] ordered by score descending
+    """
+    return {"retrieved_chunks": []}
+
+
+def _stub_verify(state: AgentState) -> Dict:
+    """
+    TEMPORARY STUB — replaced when rag-layer branch merges.
+    Always reports sufficient. Real implementation checks
+    RETRIEVAL_CONFIDENCE_THRESHOLD from src.contracts against
+    the top chunk score.
+    """
+    return {"validation_passed": True}
+
+
+def _stub_rewrite(state: AgentState) -> Dict:
+    """
+    TEMPORARY STUB — replaced when rag-layer branch merges.
+    Passthrough — returns the same sub_queries unchanged.
+    """
+    return {}
+
+
+def _retrieve_for_all_sub_queries(
+    state: AgentState, retrieval_fn: Callable
+) -> List[ChunkDict]:
+    """
+    Calls retrieval_fn once per sub-query and flattens results.
+
+    For simple queries, sub_queries contains exactly the original
+    query (set by run_agent's init), so this still results in
+    exactly 1 call.
+
+    For multi_hop queries, sub_queries contains 2-3 items from
+    decompose_query, resulting in 2-3 calls.
+    """
+    sub_queries = state.get("sub_queries") or [state["query"]]
+    all_chunks: List[ChunkDict] = []
+    for sq in sub_queries:
+        all_chunks.extend(retrieval_fn(sq))
+    return all_chunks
+
+
+def build_agent_graph(llm_router: LLMRouter, retrieval_fn: Callable = None):
+    """
+    Builds and compiles the SecureOps Assistant LangGraph.
+
+    If retrieval_fn is not provided, falls back to _stub_retrieve
+    (always returns empty chunks) — used only in tests that do not
+    care about actual retrieval behaviour.
+    """
+    graph = StateGraph(AgentState)
+
+    graph.add_node("classify", lambda s: classify_query(s, llm_router))
+    graph.add_node("decompose", lambda s: decompose_query(s, llm_router))
+    graph.add_node("refuse", handle_refusal)
+    graph.add_node("clarify", lambda s: handle_clarification(s, llm_router))
+
+    actual_retrieve = retrieval_fn if retrieval_fn else _stub_retrieve
+    if retrieval_fn:
+        graph.add_node(
+            "retrieve",
+            lambda s: {
+                "retrieved_chunks": _retrieve_for_all_sub_queries(
+                    s, actual_retrieve
+                )
+            },
+        )
+    else:
+        graph.add_node("retrieve", _stub_retrieve)
+
+    graph.add_node("verify", _stub_verify)
+    graph.add_node("rewrite", _stub_rewrite)
+    graph.add_node("synthesize", lambda s: synthesize_answer(s, llm_router))
+    graph.add_node("validate", validate_citations)
+    graph.add_node("increment_retry", increment_retry_count)
+
+    graph.set_entry_point("classify")
+
+    graph.add_conditional_edges(
+        "classify",
+        route_by_query_type,
+        {
+            "simple": "retrieve",
+            "multi_hop": "decompose",
+            "out_of_scope": "refuse",
+            "ambiguous": "clarify",
+        },
+    )
+
+    graph.add_edge("decompose", "retrieve")
+    graph.add_edge("retrieve", "verify")
+
+    graph.add_conditional_edges(
+        "verify",
+        lambda s: "sufficient",
+        {
+            "sufficient": "synthesize",
+            "insufficient": "rewrite",
+        },
+    )
+
+    graph.add_edge("rewrite", "retrieve")
+    graph.add_edge("synthesize", "validate")
+
+    graph.add_conditional_edges(
+        "validate",
+        route_by_validation,
+        {
+            "passed": END,
+            "retry": "increment_retry",
+        },
+    )
+    graph.add_edge("increment_retry", "synthesize")
+
+    graph.add_edge("refuse", END)
+    graph.add_edge("clarify", END)
+
+    return graph.compile()
+
+
+def run_agent(query: str, llm_router: LLMRouter, retrieval_fn: Callable):
+    """
+    Runs the full SecureOps Assistant agent graph for a single query.
+
+    Initialises AgentState with defaults, sets sub_queries to
+    [query] so the simple path retrieves exactly once via
+    _retrieve_for_all_sub_queries, builds and invokes the graph,
+    and converts the final state into a SecureOpsAnswer.
+    """
+    from src.schemas import AGENTSTATE_DEFAULTS, SecureOpsAnswer
+
+    initial_state = dict(AGENTSTATE_DEFAULTS)
+    initial_state["query"] = query
+    initial_state["sub_queries"] = [query]
+
+    graph = build_agent_graph(llm_router, retrieval_fn)
+    final_state = graph.invoke(initial_state)
+
+    return SecureOpsAnswer(
+        answer=final_state.get("answer")
+        or final_state.get("clarification_question")
+        or "",
+        citations=final_state.get("citations", []),
+        confidence=final_state.get("confidence", 0.0),
+        refusal=final_state.get("refusal", False),
+        query_type=final_state.get("query_type", "simple"),
+        sources_used=[c.doc for c in final_state.get("citations", [])],
+    )

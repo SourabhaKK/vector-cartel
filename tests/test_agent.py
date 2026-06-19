@@ -318,21 +318,6 @@ def test_validate_citations_fails_when_overlap_insufficient():
     result = validate_citations(state)
 
     assert result["validation_passed"] is False
-    assert result["retry_count"] == 1
-
-
-def test_validate_citations_passes_at_retry_limit_even_if_failed():
-    from src.agent import validate_citations
-
-    state = make_state(
-        answer="Completely unrelated fabricated claim about quantum computing",
-        retrieved_chunks=[NIST_CHUNK],
-        retry_count=1,
-    )
-
-    result = validate_citations(state)
-
-    assert result["validation_passed"] is True
 
 
 def test_validate_citations_skips_check_for_refusal_answers():
@@ -347,6 +332,41 @@ def test_validate_citations_skips_check_for_refusal_answers():
     result = validate_citations(state)
 
     assert result["validation_passed"] is True
+
+
+def test_validate_citations_no_longer_returns_retry_count():
+    from src.agent import validate_citations
+
+    state = make_state(
+        answer="Completely unrelated fabricated claim",
+        retrieved_chunks=[NIST_CHUNK],
+        retry_count=0,
+    )
+
+    result = validate_citations(state)
+
+    assert "retry_count" not in result
+    assert result == {"validation_passed": False}
+
+
+def test_increment_retry_count_increments_by_one():
+    from src.agent import increment_retry_count
+
+    state = make_state(retry_count=0)
+
+    result = increment_retry_count(state)
+
+    assert result == {"retry_count": 1}
+
+
+def test_increment_retry_count_from_one_to_two():
+    from src.agent import increment_retry_count
+
+    state = make_state(retry_count=1)
+
+    result = increment_retry_count(state)
+
+    assert result == {"retry_count": 2}
 
 
 # ── ROUTE FUNCTIONS ────────────────────────────────────────────────
