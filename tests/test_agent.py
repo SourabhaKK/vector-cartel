@@ -438,3 +438,219 @@ def test_agent_imports_prompts_module_qualified():
     source = inspect.getsource(agent_module)
     assert "import src.prompts as prompts" in source
     assert "from src.prompts import" not in source
+
+
+# ── build_agent_graph / run_agent — INTEGRATION (RED) ──────────────
+
+
+def test_build_agent_graph_returns_compiled_graph(mocker):
+    from src.agent import build_agent_graph
+
+    mock_llm = mocker.Mock()
+    graph = build_agent_graph(mock_llm)
+
+    assert graph is not None
+    assert hasattr(graph, "invoke")
+
+
+def test_build_agent_graph_is_idempotent(mocker):
+    from src.agent import build_agent_graph
+
+    mock_llm = mocker.Mock()
+    graph1 = build_agent_graph(mock_llm)
+    graph2 = build_agent_graph(mock_llm)
+
+    assert hasattr(graph1, "invoke")
+    assert hasattr(graph2, "invoke")
+
+
+def test_run_agent_simple_query_returns_secure_ops_answer(mocker):
+    from src.agent import run_agent
+    from src.schemas import SecureOpsAnswer
+
+    mock_llm = mocker.Mock()
+    mock_llm.generate_json.return_value = {
+        "query_type": "simple",
+        "confidence": 0.9,
+    }
+    mock_llm.generate.return_value = (
+        "Firewalls segment OT networks [Source: NIST SP 800-82 Rev 3 | 5.2]"
+    )
+
+    def mock_retrieval_fn(query: str):
+        return [
+            {
+                "text": "Firewalls segment OT networks",
+                "metadata": {
+                    "doc": "NIST SP 800-82 Rev 3",
+                    "section": "5.2",
+                    "page": 45,
+                },
+                "score": 0.85,
+            }
+        ]
+
+    result = run_agent(
+        "What does NIST say about firewalls?", mock_llm, mock_retrieval_fn
+    )
+
+    assert isinstance(result, SecureOpsAnswer)
+    assert result.refusal is False
+    assert len(result.citations) > 0
+    assert result.citations[0].doc == "NIST SP 800-82 Rev 3"
+
+
+def test_run_agent_out_of_scope_never_calls_retrieval(mocker):
+    from src.agent import run_agent
+
+    mock_llm = mocker.Mock()
+    mock_llm.generate_json.return_value = {"query_type": "out_of_scope"}
+
+    retrieval_fn = mocker.Mock(return_value=[])
+
+    result = run_agent(
+        "What is our company firewall config?", mock_llm, retrieval_fn
+    )
+
+    assert result.refusal is True
+    assert retrieval_fn.call_count == 0
+
+
+def test_run_agent_ambiguous_never_calls_retrieval(mocker):
+    from src.agent import run_agent
+
+    mock_llm = mocker.Mock()
+    mock_llm.generate_json.return_value = {"query_type": "ambiguous"}
+    mock_llm.generate.return_value = "Which Siemens product line?"
+
+    retrieval_fn = mocker.Mock(return_value=[])
+
+    result = run_agent("Tell me about Siemens stuff", mock_llm, retrieval_fn)
+
+    assert result.refusal is False
+    assert retrieval_fn.call_count == 0
+    assert "Which Siemens product line?" in result.answer
+
+
+def test_run_agent_multi_hop_calls_retrieval_once_per_sub_query(mocker):
+    from src.agent import run_agent
+
+    mock_llm = mocker.Mock()
+    mock_llm.generate_json.side_effect = [
+        {"query_type": "multi_hop"},
+        {"sub_queries": ["NIST remote access", "CISA Siemens advisory"]},
+    ]
+    mock_llm.generate.return_value = (
+        "Combined answer [Source: NIST SP 800-82 Rev 3 | 5.2]"
+    )
+
+    retrieval_fn = mocker.Mock(
+        return_value=[
+            {
+                "text": "test chunk",
+                "metadata": {
+                    "doc": "NIST SP 800-82 Rev 3",
+                    "section": "5.2",
+                    "page": None,
+                },
+                "score": 0.8,
+            }
+        ]
+    )
+
+    result = run_agent("complex multi hop query", mock_llm, retrieval_fn)
+
+    assert retrieval_fn.call_count == 2
+
+
+def test_run_agent_simple_query_calls_retrieval_exactly_once(mocker):
+    from src.agent import run_agent
+
+    mock_llm = mocker.Mock()
+    mock_llm.generate_json.return_value = {"query_type": "simple"}
+    mock_llm.generate.return_value = (
+        "Answer [Source: NIST SP 800-82 Rev 3 | 5.2]"
+    )
+
+    retrieval_fn = mocker.Mock(
+        return_value=[
+            {
+                "text": "test chunk",
+                "metadata": {
+                    "doc": "NIST SP 800-82 Rev 3",
+                    "section": "5.2",
+                    "page": None,
+                },
+                "score": 0.8,
+            }
+        ]
+    )
+
+    result = run_agent("simple query", mock_llm, retrieval_fn)
+
+    assert retrieval_fn.call_count == 1
+
+
+def test_route_edge_keys_match_route_function_return_values(mocker):
+    from src.agent import run_agent
+
+    for query_type in ["simple", "multi_hop", "out_of_scope", "ambiguous"]:
+        mock_llm_iter = mocker.Mock()
+        mock_llm_iter.generate_json.return_value = {"query_type": query_type}
+        if query_type == "multi_hop":
+            mock_llm_iter.generate_json.side_effect = [
+                {"query_type": "multi_hop"},
+                {"sub_queries": ["sub query"]},
+            ]
+        mock_llm_iter.generate.return_value = (
+            "answer text [Source: NIST SP 800-82 Rev 3 | 5.2]"
+            if query_type in ("simple", "multi_hop")
+            else "clarification or n/a"
+        )
+        retrieval_fn = mocker.Mock(
+            return_value=[
+                {
+                    "text": "chunk",
+                    "metadata": {
+                        "doc": "NIST SP 800-82 Rev 3",
+                        "section": "5.2",
+                        "page": None,
+                    },
+                    "score": 0.8,
+                }
+            ]
+        )
+
+        result = run_agent("test query", mock_llm_iter, retrieval_fn)
+
+        assert result is not None
+
+
+def test_run_agent_validation_retry_calls_synthesize_twice_max(mocker):
+    from src.agent import run_agent
+
+    mock_llm = mocker.Mock()
+    mock_llm.generate_json.return_value = {"query_type": "simple"}
+    mock_llm.generate.side_effect = [
+        "Completely unrelated fabricated claim about quantum computing",
+        "Firewalls segment OT networks [Source: NIST SP 800-82 Rev 3 | 5.2]",
+    ]
+
+    retrieval_fn = mocker.Mock(
+        return_value=[
+            {
+                "text": "Firewalls segment OT networks",
+                "metadata": {
+                    "doc": "NIST SP 800-82 Rev 3",
+                    "section": "5.2",
+                    "page": None,
+                },
+                "score": 0.85,
+            }
+        ]
+    )
+
+    result = run_agent("query", mock_llm, retrieval_fn)
+
+    assert mock_llm.generate.call_count == 2
+    assert result.refusal is False
