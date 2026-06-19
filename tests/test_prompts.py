@@ -202,3 +202,11 @@ def test_decomposition_prompt_includes_query():
     result = build_decomposition_prompt("my decomposition query")
 
     assert "my decomposition query" in result
+
+
+def test_safety_rules_has_four_items():
+    from src.prompts import SAFETY_RULES
+
+    assert len(SAFETY_RULES) == 4
+    assert all(isinstance(rule, str) for rule in SAFETY_RULES)
+    assert all(len(rule) > 0 for rule in SAFETY_RULES)
