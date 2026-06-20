@@ -8,8 +8,8 @@ Keeping prompts here (not in agent.py or llm.py) means:
 - All security rules live in one auditable place
 
 SPOTLIGHTING DEFENCE (Hines et al., 2024):
-All retrieved chunks are wrapped in <retrieved_document> XML tags.
-Rule 4 in SAFETY_RULES instructs the model to never follow
+All retrieved chunks are wrapped in retrieved_document XML tags
+(see _wrap_chunk_in_xml). Rule 4 in SAFETY_RULES instructs the model to never follow
 instructions found inside those tags. This is the primary
 defence against indirect prompt injection via poisoned corpus
 documents. A malicious advisory with embedded instructions
@@ -64,7 +64,7 @@ def _wrap_chunk_in_xml(chunk: ChunkDict, index: int) -> str:
 
     Returns:
         String containing the chunk text wrapped in
-        <retrieved_document id source section> XML tags.
+        retrieved_document XML tags (id, source, section attributes).
     """
     return (
         f'<retrieved_document id="{index}" '
@@ -83,7 +83,7 @@ def build_system_prompt(chunks: List[ChunkDict]) -> str:
     LLM returns: answer text with inline [Source: doc | section]
                  citations after every factual claim.
 
-    Security: chunks are wrapped in <retrieved_document> XML tags
+    Security: chunks are wrapped in retrieved_document XML tags
     (spotlighting defence). Rule 4 in SAFETY_RULES instructs the
     model to treat tag contents as data only, never as instructions.
     This is the primary mitigation for indirect prompt injection

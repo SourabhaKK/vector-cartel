@@ -61,6 +61,19 @@ def test_classify_query_defaults_to_simple_on_json_parse_error(mocker):
     assert result == {"query_type": "simple"}
 
 
+def test_classify_query_defaults_to_simple_on_rate_limit_error(mocker):
+    from src.agent import classify_query
+    from src.llm import RateLimitError
+
+    mock_llm = mocker.Mock()
+    mock_llm.generate_json.side_effect = RateLimitError("RPM ceiling exceeded")
+    state = make_state(query="What does NIST say about VPNs?")
+
+    result = classify_query(state, mock_llm)
+
+    assert result == {"query_type": "simple"}
+
+
 def test_classify_query_passes_query_to_prompt_builder(mocker):
     from src.agent import classify_query
 
@@ -192,6 +205,20 @@ def test_handle_clarification_sets_question_from_llm(mocker):
     assert result["clarification_question"] == "Which Siemens product line?"
 
 
+def test_handle_clarification_falls_back_on_llm_error(mocker):
+    from src.agent import CLARIFICATION_FALLBACK_QUESTION, handle_clarification
+    from src.llm import AllProvidersExhausted
+
+    mock_llm = mocker.Mock()
+    mock_llm.generate.side_effect = AllProvidersExhausted("both providers down")
+    state = make_state(query="Tell me about Siemens vulnerabilities")
+
+    result = handle_clarification(state, mock_llm)
+
+    assert result["needs_clarification"] is True
+    assert result["clarification_question"] == CLARIFICATION_FALLBACK_QUESTION
+
+
 # ── NODE 5 — synthesize_answer ────────────────────────────────────
 
 
@@ -287,6 +314,21 @@ def test_synthesize_answer_confidence_reflects_chunk_scores(mocker):
     result = synthesize_answer(state, mock_llm)
 
     assert result["confidence"] == NIST_CHUNK["score"]
+
+
+def test_synthesize_answer_returns_failure_message_on_llm_error(mocker):
+    from src.agent import SYNTHESIS_FAILURE_MESSAGE, synthesize_answer
+    from src.llm import MaxRetriesExceeded
+
+    mock_llm = mocker.Mock()
+    mock_llm.generate.side_effect = MaxRetriesExceeded("exhausted retries")
+    state = make_state(retrieved_chunks=[NIST_CHUNK])
+
+    result = synthesize_answer(state, mock_llm)
+
+    assert result["answer"] == SYNTHESIS_FAILURE_MESSAGE
+    assert result["citations"] == []
+    assert result["confidence"] == 0.0
 
 
 # ── NODE 6 — validate_citations ───────────────────────────────────

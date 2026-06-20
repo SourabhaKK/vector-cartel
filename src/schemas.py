@@ -138,12 +138,15 @@ class AgentState(TypedDict):
     # Parsed from inline [Source: doc | section] in LLM output
     citations: List[Citation]
 
-    # Set by: synthesize_answer node
-    # Derived from top retrieved chunk score
+    # Set by: synthesize_answer node (derived from top retrieved
+    # chunk score) OR handle_refusal node (hardcoded to 0.0) —
+    # these are mutually exclusive graph paths, never sequential
     confidence: float
 
     # ── OUTPUT FLAGS (output-layer + llm-and-agentic) ──────────
-    # Set by: handle_refusal node OR input_gate node
+    # Set by: handle_refusal node (this branch). input_gate node
+    # is output-layer's (Kaveen's) — not yet merged into dev, see
+    # InputScannerProtocol in src.contracts for that contract.
     refusal: bool
 
     # Set by: handle_clarification node
@@ -152,19 +155,35 @@ class AgentState(TypedDict):
     # Set by: handle_clarification node
     clarification_question: str
 
-    # ── VALIDATION (output-layer) ───────────────────────────────
-    # Set by: validate_citations node (output-layer)
-    # True when all answer sentences pass token overlap check
+    # ── VALIDATION (llm-and-agentic) ────────────────────────────
+    # Set by: validate_citations node (src/agent.py — NOT
+    # output-layer, despite this section header; the answer-
+    # groundedness check lives in this branch) OR _stub_verify
+    # node (always True, temporary — see src/agent.py module
+    # docstring). _stub_verify's write is currently unread: the
+    # "verify" node's outgoing edge uses a separate hardcoded
+    # routing lambda, not this field, so two functions write
+    # validation_passed but only validate_citations' write is
+    # ever actually consulted by route_by_validation.
     validation_passed: bool
 
     # ── CONTROL FLOW ───────────────────────────────────────────
-    # Set by: any node that retries
-    # Checked by route_by_validation to prevent infinite loops
-    # Must not exceed MAX_NODE_RETRIES from src.contracts
+    # Set by: increment_retry_count node ONLY, on the "retry" edge
+    # after validate_citations fails. validate_citations itself
+    # does NOT touch this field (see validate_citations docstring —
+    # this split was a deliberate fix for a bug where both functions
+    # touching retry_count caused an off-by-one routing error).
+    # Checked by route_by_validation to prevent infinite loops.
+    # Must not exceed MAX_NODE_RETRIES from src.contracts.
     retry_count: int
 
-    # Set by: any node on unexpected exception
-    # None during normal operation
+    # Reserved for: any node on unexpected exception. NOT YET
+    # IMPLEMENTED — no node in src/agent.py currently writes this
+    # field. Exceptions from LLM calls (RateLimitError,
+    # AllProvidersExhausted) currently propagate uncaught out of
+    # run_agent and are only caught by chat_fn's top-level safety
+    # net in src/gradio_demo.py, never recorded here. None during
+    # normal operation.
     error: Optional[str]
 
 

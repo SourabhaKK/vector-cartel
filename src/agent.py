@@ -50,16 +50,26 @@ from src.schemas import AgentState, Citation
 from src.contracts import (
     ChunkDict,
     MAX_NODE_RETRIES,
+    OUTPUT_GROUNDEDNESS_THRESHOLD,
     get_chunk_doc,
     get_chunk_section,
 )
-from src.llm import LLMRouter, JSONParseError
+from src.llm import LLMRouter, SecureOpsLLMError
 
 logger = logging.getLogger(__name__)
 
 REFUSAL_STRING = (
     "I don't have enough information in the corpus to answer "
     "this question."
+)
+
+CLARIFICATION_FALLBACK_QUESTION = (
+    "Could you provide more detail about what you're asking?"
+)
+
+SYNTHESIS_FAILURE_MESSAGE = (
+    "I'm temporarily unable to generate an answer due to a "
+    "service issue. Please try again."
 )
 
 CITATION_PATTERN = re.compile(r"\[Source:\s*([^|]+?)\s*\|\s*([^\]]+?)\]")
@@ -75,9 +85,11 @@ def classify_query(state: AgentState, llm: LLMRouter) -> Dict:
     Prompt calls: prompts.build_classification_prompt (module-qualified
                   — spied on by test_classify_query_passes_query_to_prompt_builder)
 
-    Defaults to "simple" on JSONParseError rather than propagating
-    the exception — a misclassified query degrades gracefully to
-    single-shot RAG rather than crashing the pipeline.
+    Defaults to "simple" on any SecureOpsLLMError (JSONParseError,
+    RateLimitError, AllProvidersExhausted) rather than propagating
+    the exception — a misclassified or unreachable-LLM query
+    degrades gracefully to single-shot RAG rather than crashing
+    the whole graph.
 
     Called by: entry point of build_agent_graph, routes via
     route_by_query_type to one of 4 paths.
@@ -86,8 +98,8 @@ def classify_query(state: AgentState, llm: LLMRouter) -> Dict:
     try:
         result = llm.generate_json(prompt)
         return {"query_type": result.get("query_type", "simple")}
-    except JSONParseError:
-        logger.warning("classify_query: JSONParseError, defaulting to simple")
+    except SecureOpsLLMError as e:
+        logger.warning(f"classify_query: {e}, defaulting to simple")
         return {"query_type": "simple"}
 
 
@@ -102,7 +114,8 @@ def decompose_query(state: AgentState, llm: LLMRouter) -> Dict:
     Prompt calls: prompts.build_decomposition_prompt (module-qualified)
 
     Falls back to [state["query"]] (treat as a single sub-query)
-    if the LLM returns an empty list or raises JSONParseError —
+    if the LLM returns an empty list or raises any SecureOpsLLMError
+    (JSONParseError, RateLimitError, AllProvidersExhausted) —
     degrades to single-shot retrieval rather than failing the
     multi_hop path entirely.
 
@@ -115,8 +128,8 @@ def decompose_query(state: AgentState, llm: LLMRouter) -> Dict:
         if not sub_queries:
             return {"sub_queries": [state["query"]]}
         return {"sub_queries": sub_queries[:3]}
-    except JSONParseError:
-        logger.warning("decompose_query: JSONParseError, using original query")
+    except SecureOpsLLMError as e:
+        logger.warning(f"decompose_query: {e}, using original query")
         return {"sub_queries": [state["query"]]}
 
 
@@ -149,13 +162,24 @@ def handle_clarification(state: AgentState, llm: LLMRouter) -> Dict:
                   is not part of src.prompts since it is not shared
                   with or tested via the prompts module)
 
+    Falls back to CLARIFICATION_FALLBACK_QUESTION on any
+    SecureOpsLLMError (RateLimitError, MaxRetriesExceeded,
+    AllProvidersExhausted) rather than propagating — needs_clarification
+    stays True so the graph still ends with a clarification request,
+    just a generic one instead of a tailored question.
+
     Called by: route_by_query_type when query_type == "ambiguous".
     """
     clarification_prompt = (
         f"The following query is ambiguous: '{state['query']}'. "
         f"Generate a single clarifying question to ask the user."
     )
-    question = llm.generate(clarification_prompt, "")
+    try:
+        question = llm.generate(clarification_prompt, "")
+    except SecureOpsLLMError as e:
+        logger.warning(f"handle_clarification: {e}, using generic fallback question")
+        question = CLARIFICATION_FALLBACK_QUESTION
+
     return {
         "needs_clarification": True,
         "clarification_question": question,
@@ -177,10 +201,29 @@ def synthesize_answer(state: AgentState, llm: LLMRouter) -> Dict:
     Called after: retrieve (rag-layer) on simple/multi_hop path
     Called by: validate_citations on retry (max 1 retry, see
                MAX_NODE_RETRIES in src.contracts)
+
+    On any SecureOpsLLMError (RateLimitError, MaxRetriesExceeded,
+    AllProvidersExhausted), returns SYNTHESIS_FAILURE_MESSAGE with
+    no citations and confidence 0.0 rather than propagating — this
+    is a distinct message from REFUSAL_STRING (service outage vs.
+    corpus scope) and is NOT compared against REFUSAL_STRING
+    anywhere, so validate_citations will still run its normal
+    token-overlap check on it (likely fail low, triggering one
+    retry via MAX_NODE_RETRIES before the graph gives up and
+    returns this message to the caller).
     """
     chunks = state["retrieved_chunks"]
     system_prompt = prompts.build_system_prompt(chunks)
-    answer_text = llm.generate(system_prompt, state["query"])
+
+    try:
+        answer_text = llm.generate(system_prompt, state["query"])
+    except SecureOpsLLMError as e:
+        logger.error(f"synthesize_answer: {e}, returning failure message")
+        return {
+            "answer": SYNTHESIS_FAILURE_MESSAGE,
+            "citations": [],
+            "confidence": 0.0,
+        }
 
     citations = _parse_citations(answer_text)
     confidence = _max_chunk_score(chunks)
@@ -247,7 +290,7 @@ def validate_citations(state: AgentState) -> Dict:
         return {"validation_passed": True}
 
     overlap = _token_overlap(state["answer"], state["retrieved_chunks"])
-    return {"validation_passed": overlap >= 0.25}
+    return {"validation_passed": overlap >= OUTPUT_GROUNDEDNESS_THRESHOLD}
 
 
 def increment_retry_count(state: AgentState) -> Dict:
@@ -501,6 +544,15 @@ def build_agent_graph(
     graph.add_node("refuse", handle_refusal)
     graph.add_node("clarify", _make_clarify_node(llm_router))
 
+    # ============================================================
+    # RAG-LAYER INTEGRATION POINT — Jay/Sana wire in here.
+    # Pass your real retrieval_fn (matching RetrievalFn in
+    # src.contracts) as build_agent_graph's retrieval_fn argument —
+    # callers (e.g. run_agent, src/gradio_demo.py setup()) already
+    # plumb it through. Nothing in this file needs to change.
+    # _stub_retrieve/_stub_verify/_stub_rewrite below are the
+    # three TEMPORARY stubs this branch uses until then.
+    # ============================================================
     if retrieval_fn:
         graph.add_node("retrieve", _make_retrieve_node(retrieval_fn))
     else:
@@ -521,6 +573,22 @@ def build_agent_graph(
     graph.add_edge("decompose", "retrieve")
     graph.add_edge("retrieve", "verify")
 
+    # WARNING — DEAD STATE, READ BEFORE TOUCHING _stub_verify:
+    # The lambda on the next line is hardcoded to always return
+    # "sufficient". It does NOT read state["validation_passed"] —
+    # _stub_verify's write to that field is never consulted by
+    # anything at this point in the graph. If you replace
+    # _stub_verify with real RETRIEVAL_CONFIDENCE_THRESHOLD logic
+    # but do not ALSO replace this lambda to read
+    # state["validation_passed"], your real check will be
+    # silently ignored: routing will still always go to
+    # "synthesize", never to "rewrite", no matter what
+    # _stub_verify's replacement computes or returns.
+    # Also note state["validation_passed"] is the SAME key
+    # validate_citations writes downstream for a different
+    # check (answer groundedness) — reusing it here for
+    # retrieval sufficiency risks one write clobbering the
+    # other's meaning. Consider a separate state field instead.
     graph.add_conditional_edges(
         "verify", lambda s: "sufficient", VERIFY_ROUTING_MAP
     )
@@ -555,9 +623,9 @@ def run_agent(query: str, llm_router: LLMRouter, retrieval_fn: Callable):
     AgentState is internal). When the ambiguous path is taken,
     this function falls back to clarification_question as the
     answer text, since SecureOpsAnswer.answer is the only field
-    that reaches the caller. Gradio (src/gradio_demo.py, not
-    yet built) will be responsible for displaying this
-    distinctly from a normal answer if needed.
+    that reaches the caller. src/gradio_demo.py's chat_fn passes
+    this through format_response as-is — it does not currently
+    display clarification distinctly from a normal answer.
 
     Returns:
         SecureOpsAnswer with sources_used computed from citations.

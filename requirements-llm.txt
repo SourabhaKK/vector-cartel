@@ -6,4 +6,7 @@ langchain-google-genai
 pydantic>=2.0
 pytest
 pytest-asyncio
+pytest-mock
 python-dotenv
+requests
+gradio
