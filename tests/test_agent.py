@@ -470,6 +470,22 @@ def test_route_by_validation_passed_when_validation_true():
     assert route_by_validation(state) == "passed"
 
 
+def test_verify_routing_reads_retrieval_sufficient_true():
+    from src.agent import route_by_retrieval_sufficiency
+
+    state = make_state(retrieval_sufficient=True)
+
+    assert route_by_retrieval_sufficiency(state) == "sufficient"
+
+
+def test_verify_routing_reads_retrieval_sufficient_false():
+    from src.agent import route_by_retrieval_sufficiency
+
+    state = make_state(retrieval_sufficient=False)
+
+    assert route_by_retrieval_sufficiency(state) == "insufficient"
+
+
 # ── EXTRACTED HELPER CONTRACTS ─────────────────────────────────────
 
 

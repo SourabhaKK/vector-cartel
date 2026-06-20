@@ -379,6 +379,23 @@ def route_by_validation(state: AgentState) -> str:
     return "retry"
 
 
+def route_by_retrieval_sufficiency(state: AgentState) -> str:
+    """
+    Routes based on whether the verify node found retrieval
+    sufficient. Reads retrieval_sufficient, NOT validation_passed
+    -- see schemas.py field documentation for why these are
+    separate.
+
+    Reads: state["retrieval_sufficient"]
+    Returns: "sufficient" or "insufficient"
+    LLM calls: 0
+    Prompt calls: none
+
+    Called by: LangGraph conditional edge after the "verify" node.
+    """
+    return "sufficient" if state["retrieval_sufficient"] else "insufficient"
+
+
 def _stub_retrieve(state: AgentState) -> Dict:
     """
     TEMPORARY STUB — replaced when rag-layer branch merges.
@@ -403,11 +420,13 @@ def _stub_retrieve(state: AgentState) -> Dict:
 def _stub_verify(state: AgentState) -> Dict:
     """
     TEMPORARY STUB — replaced when rag-layer branch merges.
-    Always reports sufficient. Real implementation checks
+    Always reports sufficient via retrieval_sufficient (NOT
+    validation_passed -- see schemas.py for why these are
+    separate fields). Real implementation checks
     RETRIEVAL_CONFIDENCE_THRESHOLD from src.contracts against
     the top chunk score.
     """
-    return {"validation_passed": True}
+    return {"retrieval_sufficient": True}
 
 
 def _stub_rewrite(state: AgentState) -> Dict:
@@ -509,13 +528,14 @@ def build_agent_graph(
         "out_of_scope"  -> refuse -> END
         "ambiguous"     -> clarify -> END
 
-      verify --[stub, always "sufficient" for now]-->
+      verify --[route_by_retrieval_sufficiency, stub always True for now]-->
         "sufficient"    -> synthesize
         "insufficient"  -> rewrite -> retrieve (loop back)
         NOTE: "insufficient" path is currently unreachable —
-        _stub_verify always returns validation_passed=True.
+        _stub_verify always returns retrieval_sufficient=True.
         This activates once rag-layer replaces _stub_verify
-        with real RETRIEVAL_CONFIDENCE_THRESHOLD logic.
+        with real RETRIEVAL_CONFIDENCE_THRESHOLD logic (still
+        writing retrieval_sufficient, NOT validation_passed).
 
       validate --[route_by_validation]-->
         "passed" -> END
@@ -573,24 +593,16 @@ def build_agent_graph(
     graph.add_edge("decompose", "retrieve")
     graph.add_edge("retrieve", "verify")
 
-    # WARNING — DEAD STATE, READ BEFORE TOUCHING _stub_verify:
-    # The lambda on the next line is hardcoded to always return
-    # "sufficient". It does NOT read state["validation_passed"] —
-    # _stub_verify's write to that field is never consulted by
-    # anything at this point in the graph. If you replace
-    # _stub_verify with real RETRIEVAL_CONFIDENCE_THRESHOLD logic
-    # but do not ALSO replace this lambda to read
-    # state["validation_passed"], your real check will be
-    # silently ignored: routing will still always go to
-    # "synthesize", never to "rewrite", no matter what
-    # _stub_verify's replacement computes or returns.
-    # Also note state["validation_passed"] is the SAME key
-    # validate_citations writes downstream for a different
-    # check (answer groundedness) — reusing it here for
-    # retrieval sufficiency risks one write clobbering the
-    # other's meaning. Consider a separate state field instead.
+    # RESOLVED: this previously hardcoded lambda used to ignore
+    # state entirely, creating a dead-state bug where _stub_verify's
+    # write to validation_passed was never consulted (see commit
+    # history / pre-merge audit). Fixed by introducing a dedicated
+    # retrieval_sufficient field (see schemas.py) so retrieval
+    # confidence and answer groundedness no longer share a key.
+    # rag-layer's real _stub_verify replacement should continue
+    # writing to retrieval_sufficient, not validation_passed.
     graph.add_conditional_edges(
-        "verify", lambda s: "sufficient", VERIFY_ROUTING_MAP
+        "verify", route_by_retrieval_sufficiency, VERIFY_ROUTING_MAP
     )
 
     graph.add_edge("rewrite", "retrieve")

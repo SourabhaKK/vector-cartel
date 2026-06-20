@@ -156,16 +156,24 @@ class AgentState(TypedDict):
     clarification_question: str
 
     # ── VALIDATION (llm-and-agentic) ────────────────────────────
-    # Set by: validate_citations node (src/agent.py — NOT
-    # output-layer, despite this section header; the answer-
-    # groundedness check lives in this branch) OR _stub_verify
-    # node (always True, temporary — see src/agent.py module
-    # docstring). _stub_verify's write is currently unread: the
-    # "verify" node's outgoing edge uses a separate hardcoded
-    # routing lambda, not this field, so two functions write
-    # validation_passed but only validate_citations' write is
-    # ever actually consulted by route_by_validation.
+    # Set by: validate_citations node (src/agent.py) ONLY.
+    # Answer-groundedness check — does the generated answer overlap
+    # sufficiently with retrieved_chunks. This field previously had
+    # a second writer (_stub_verify) whose write was dead state
+    # (see retrieval_sufficient below for the fix and full history).
     validation_passed: bool
+
+    # Set by: verify node (rag-layer, src/retrieval.py once merged;
+    # currently _stub_verify in src/agent.py as a placeholder)
+    # Distinct from validation_passed (which is validate_citations'
+    # field for answer groundedness) -- this field is specifically
+    # for retrieval sufficiency, checked against
+    # RETRIEVAL_CONFIDENCE_THRESHOLD from src.contracts. Read by
+    # route_by_retrieval_sufficiency to route to synthesize or
+    # rewrite. Introduced to resolve a dead-state landmine where
+    # _stub_verify wrote validation_passed but the verify routing
+    # edge never read it — see commit history / pre-merge audit.
+    retrieval_sufficient: bool
 
     # ── CONTROL FLOW ───────────────────────────────────────────
     # Set by: increment_retry_count node ONLY, on the "retry" edge
@@ -201,4 +209,5 @@ AGENTSTATE_DEFAULTS: AgentState = {
     "retry_count": 0,
     "error": None,
     "validation_passed": False,
+    "retrieval_sufficient": True,
 }

@@ -134,6 +134,7 @@ def test_agent_state_default_values():
         "retry_count": 0,
         "error": None,
         "validation_passed": False,
+        "retrieval_sufficient": True,
     }
 
     assert state["query"] == "test query"
@@ -147,6 +148,7 @@ def test_agent_state_default_values():
     assert state["clarification_question"] == ""
     assert state["retry_count"] == 0
     assert state["error"] is None
+    assert state["retrieval_sufficient"] is True
 
 
 def test_agent_state_retrieved_chunks_accepts_chunk_dicts():
