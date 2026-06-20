@@ -180,3 +180,28 @@ def test_chat_fn_returns_error_string_on_exception(mocker):
     result_lower = result.lower()
     assert "error" in result_lower
     assert "please retry" in result_lower or "retry" in result_lower
+
+
+def test_format_citation_list_single_citation():
+    from src.gradio_demo import _format_citation_list
+    from src.schemas import Citation
+
+    citations = [
+        Citation(doc="NIST SP 800-82 Rev 3", section="5.2", snippet="test")
+    ]
+
+    result = _format_citation_list(citations)
+
+    assert "[1]" in result
+    assert "NIST SP 800-82 Rev 3" in result
+
+
+def test_get_required_env_raises_when_missing(monkeypatch):
+    from src.gradio_demo import _get_required_env
+
+    monkeypatch.delenv("SOME_NONEXISTENT_KEY", raising=False)
+
+    import pytest
+
+    with pytest.raises(EnvironmentError):
+        _get_required_env("SOME_NONEXISTENT_KEY")
