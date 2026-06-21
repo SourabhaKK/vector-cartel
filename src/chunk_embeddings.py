@@ -6,16 +6,8 @@ import os
 
 # pyrefly: ignore [missing-import]
 from langchain_community.document_loaders import DirectoryLoader, TextLoader, PyPDFLoader
-
 # pyrefly: ignore [missing-import]
 from langchain_core.documents import Document
-
-# Add src folder to Python path for notebook usage
-PROJECT_ROOT = r"C:\Users\knowu\Documents\Projects\AI_Hackathon\vector-cartel"
-SRC_DIR = os.path.join(PROJECT_ROOT, "src")
-
-if SRC_DIR not in sys.path:
-    sys.path.insert(0, SRC_DIR)
 
 from vector_db_storage import vector_db_storage
 from text_chunk import chunk_text_func
@@ -24,6 +16,17 @@ from ollama_inference import (
     extract_metadata_for_attack_files,
     extract_metadata_for_advisory_files,
 )
+
+
+# Get the absolute path to the project root directory
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+
+# Dynamically add the src directory to sys.path
+SRC_DIR = os.path.join(PROJECT_ROOT, 'src')
+sys.path.append(SRC_DIR)
+
+if SRC_DIR not in sys.path:
+    sys.path.insert(0, SRC_DIR)
 
 
 def _json_safe(value: Any) -> str | int | float | bool:
@@ -80,6 +83,12 @@ def _extract_document_level_metadata(doc: Document) -> dict:
     For PDFs/NIST files, create simple metadata from path/page info.
     """
     source_path = doc.metadata.get("source", "N/A")
+    if source_path != "N/A":
+        try:
+            source_path = os.path.relpath(source_path, PROJECT_ROOT).replace("\\", "/")
+        except ValueError:
+            pass
+
     source_type = _detect_source_type(source_path)
     file_name = Path(source_path).name if source_path != "N/A" else "N/A"
 
@@ -217,6 +226,8 @@ def iterate_chunk_vectorize(
 
     print("[LOG] Chunking documents and attaching metadata")
     print("--" * 30)
+    
+    metadata_documents = {}
 
     for doc_idx, doc in enumerate(docs):
         if isinstance(doc, str):
@@ -230,6 +241,7 @@ def iterate_chunk_vectorize(
         document_meta = _extract_document_level_metadata(doc)
 
         chunks = chunk_text_func(doc.page_content)
+        
 
         for chunk_idx, chunk in enumerate(chunks):
             chunk_content = chunk.page_content
@@ -296,26 +308,47 @@ def iterate_chunk_vectorize(
                 )
             )
 
+            file_name = document_meta.get("file_name", "N/A")
+            if file_name not in metadata_documents:
+                metadata_documents[file_name] = {
+                    "chunks": [],
+                    "chunk_id": []
+                }
+            
+            metadata_documents[file_name]["chunks"].append({
+                "page_content": final_content,
+                "metadata": safe_meta
+            })
+            metadata_documents[file_name]["chunk_id"].append(safe_meta["chunk_id"])
+
+    
+
+    print(f"[LOG] Exporting to chunk_metadata.json...")
+    with open("chunk_metadata.json", 'w') as fp:
+        json.dump(metadata_documents, fp, indent=2)
+
     print(f"[LOG] Number of chunks created: {len(chunked_docs)}")
     print("--" * 30)
 
     print("[LOG] Storing embeddings in Chroma vector DB")
     print("--" * 30)
 
-    vector_db_storage(
-        chunks=chunked_docs,
-        persist_directory=persist_directory,
-        batch_size=batch_size,
-    )
+    # vector_db_storage(
+    #     chunks=chunked_docs,
+    #     persist_directory=persist_directory,
+    #     batch_size=batch_size,
+    # )
 
     print("[LOG] Embeddings stored successfully")
 
     return chunked_docs
 
 if __name__ == "__main__":
-    iterate_chunk_vectorize(r"c:\\Users\\knowu\\Documents\\Projects\\AI_Hackathon\\vector-cartel\\corpus\\advisories", "runtime_advisories_vector_db", 256)
-    print(f'Advisories Vector DB Created')
-    iterate_chunk_vectorize(r"c:\\Users\\knowu\\Documents\\Projects\\AI_Hackathon\\vector-cartel\\corpus\\attack", "runtime_attack_ics_vector_db", 256)
-    print(f'Attack ICS Vector DB Created')
-    iterate_chunk_vectorize(r"c:\\Users\\knowu\\Documents\\Projects\\AI_Hackathon\\vector-cartel\\corpus\\nist", "runtime_nist_vector_db", 256)
-    print(f'NIST Vector DB Created')
+    corpus_dir = os.path.join(PROJECT_ROOT, "data", "corpus")
+    vector_db_dir = os.path.join(PROJECT_ROOT, "data", "vector_db")
+    
+    # Ensure vector_db directory exists
+    os.makedirs(vector_db_dir, exist_ok=True)
+    
+    iterate_chunk_vectorize(corpus_dir, vector_db_dir, 256)
+    print(f'Unified Vector DB Created at {vector_db_dir}')

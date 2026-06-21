@@ -1,6 +1,6 @@
 # pyrefly: ignore [missing-import]
 from langchain_chroma import Chroma
-from embedding_helpers import jina_embeddings
+from embedding_helpers import embeddings
 # pyrefly: ignore [missing-import]
 from langchain_core.documents import Document
 from typing import List
@@ -15,7 +15,7 @@ def vector_db_storage(chunks: List[Document], batch_size: int = 256, persist_dir
             excessive memory consumption.
     """
     # Initialize a Chroma collection without pre‑embedding
-    vectorstore = Chroma(embedding_function=jina_embeddings, persist_directory=persist_directory)
+    vectorstore = Chroma(embedding_function=embeddings, persist_directory=persist_directory)
     # Add documents in batches to keep memory usage reasonable
     total_batches = (len(chunks) + batch_size - 1) // batch_size
     for i in range(total_batches):
