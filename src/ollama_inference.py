@@ -12,6 +12,13 @@ from pydantic_models import (
 HONEST_FALLBACK = "I don't have enough information."
 LLM_MODEL = "gemma4:12b"
 
+DETERMINISTIC_OPTIONS = {
+    "temperature": 0.3,
+    "seed": 42,
+    "top_k": 1,
+    "top_p": 0.95,
+}
+
 def mistral_model_inference(query: str, context: str) -> str:
     """
     Call the local LLM through Ollama for the SecureOps Assistant RAG system.
@@ -94,6 +101,7 @@ def mistral_model_inference(query: str, context: str) -> str:
                 ),
             },
         ],
+        options=DETERMINISTIC_OPTIONS,
     )
 
     return response["message"]["content"]
@@ -136,6 +144,7 @@ Now extract metadata from the content provided by the user following the exact s
             },
         ],
         format=AttackICSMetadata.model_json_schema(),
+        options=DETERMINISTIC_OPTIONS,
     )
 
     return AttackICSMetadata.model_validate_json(
@@ -182,6 +191,7 @@ Now extract metadata from the content provided by the user following the exact s
             },
         ],
         format=AdvisoriesMetadata.model_json_schema(),
+        options=DETERMINISTIC_OPTIONS,
     )
 
     return AdvisoriesMetadata.model_validate_json(
@@ -452,7 +462,7 @@ def extract_metadata_from_corpus(file_path: str) -> SecureOpsDocumentMetadata:
     if "attack" in lower_path or "mitre" in lower_path:
             return extract_metadata_for_attack_files(content[:500])
     elif "advisories" in lower_path or "cisa" in lower_path:
-            return extract_metadata_for_advisory_files(content[:200])
+            return extract_metadata_for_advisory_files(content[:500])
     else:
         print("Nothing yet, redo")
     
