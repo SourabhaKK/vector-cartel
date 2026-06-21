@@ -1,7 +1,5 @@
 # Runtime Vector DB
-runtime_advisories_vector_db
-runtime_attack_ics_vector_db
-runtime_nist_vector_db
+data/
 
 # Dummy files
 scrap/
