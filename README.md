@@ -1,430 +1,446 @@
-markdown<div align="center">
+# SecureOps Assistant — RAG Data & Retrieval Pipeline
 
-# 🔒 Vector Cartel — SecureOps Assistant
+**AAI Tech Talks Hackathon 2026 · MSc Applied AI · WMG, University of Warwick**
+**Team:** Vector Cartel · **Target tier:** Tier 3 · **Submission deadline:** 23/06/2026 13:00
 
-**RAG-based Question Answering for Industrial Cybersecurity**
+This document covers the **full RAG pipeline through retrieval** of the SecureOps Assistant — every
+stage that turns raw public documents into clean, chunked, metadata-rich units, builds the search
+indexes, and serves ranked results to the LLM layer. It is benchmarked throughout against the
+official **Tier 1 Starter Notebook** (`SecureOps_Assistant_Tier1_Starter.ipynb`), the naive baseline
+the hackathon brief asks us to *measurably improve*, and the retrieval quality is **quantified** with
+a gold-set evaluation (§9).
 
-*AAI Tech Talks Hackathon 2026 · WMG, University of Warwick*
-
-![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=flat&logo=python&logoColor=white)
-![LangGraph](https://img.shields.io/badge/LangGraph-Agentic-FF6B35?style=flat)
-![ChromaDB](https://img.shields.io/badge/ChromaDB-Vector_Store-6B4FBB?style=flat)
-![Gemini](https://img.shields.io/badge/Gemini_1.5_Flash-LLM-4285F4?style=flat&logo=google&logoColor=white)
-![RAGAS](https://img.shields.io/badge/RAGAS-Evaluation-2EA44F?style=flat)
-![License](https://img.shields.io/badge/License-MIT-green?style=flat)
-
-</div>
-
----
-
-## What Is This?
-
-SecureOps Assistant helps junior security analysts at manufacturing companies navigate industrial cybersecurity guidance — NIST standards, CISA advisories, and MITRE ATT&CK for ICS — without reading hundreds of pages manually.
-
-**The problem:** A hallucinated security recommendation in an OT environment is worse than no recommendation at all. A wrong firewall rule can take down a production line.
-
-**Our solution:** A Retrieval-Augmented Generation (RAG) system that grounds every answer in a source document, cites every claim, and says *"I don't have enough information"* rather than guessing.
-
-**What makes us different:**
-- Structure-aware chunking per document type — not naive 512-token sliding windows
-- Hybrid BM25 + dense retrieval with cross-encoder reranking — finds exact CVE IDs *and* semantically related content
-- LangGraph agent that classifies, decomposes, and routes queries — handles multi-hop cross-document questions (CISA → MITRE → NIST in one answer)
-- Prompt injection defence via spotlighting + chunk scanning
-- RAGAS evaluation with baseline comparison — evidence, not vibes
+> **Scope note.** This pipeline owns everything **up to and including retrieval**: corpus capture →
+> cleaning → ingestion → chunking → index build → retrieval. It ends at the contract's
+> `retrieval_fn(query) -> List[ChunkDict]`. The downstream LLM/agentic layer and the
+> output/answer/evaluation layer are separate modules that consume the `ChunkDict` contract defined
+> in `contracts.py`.
 
 ---
 
-## Team
+## Quickstart
 
-| Member | GitHub | Branch | Responsibility |
-|--------|--------|--------|----------------|
-| Sourabha Kallapur | [@SK](https://github.com/SK) | `llm-and-agentic` | LLM integration and Agentic Layer |
-| Jay Sadhu | [@Jay-Sadhu](https://github.com/Jay-Sadhu) | `rag-layer` | RAG Layer |
-| Sana Shikalgar | [@Sana-Shikalgar](https://github.com/Sana-Shikalgar) | `rag-layer` | RAG Layer |
-| Kaveen Prabodhya | [@kaveenprabodhya](https://github.com/kaveenprabodhya) | `output-layer` | Output Layer |
+```bash
+pip install -r requirements.txt        # see GPU note in requirements.txt for torch
 
----
+# Query the retriever — indexes are pre-built in index_store/, so this runs as-is.
+python retrieval.py "privilege escalation in Siemens RUGGEDCOM" -v
 
-## Architecture Overview
-OFFLINE (run once)
+# Measure retrieval quality against the 54-query gold set.
+python eval.py --show-misses
+```
 
-──────────────────────────────────────────────────────
+**Rebuild from scratch** (only if you change the corpus or chunking):
 
-NIST SP 800-82 ──┐
+```bash
+python ingestion.py --corpus new_corpus --sample -v          # corpus   -> Document
+python chunking.py  --corpus new_corpus --out chunks.jsonl   # Document -> chunks.jsonl
+python index.py     --chunks chunks.jsonl --selftest -v      # chunks   -> index_store/
+```
 
-NIST CSF 2.0   ──┤─► Parser ─► Structure-Aware Chunker ─► bge-small Embedder
+GPU (CUDA `torch`) is used automatically when available; CPU works too (retrieval just runs slower).
+On the dev machine, embedding + reranking run in the `GAN` conda env
+(`conda run -n GAN --no-capture-output python retrieval.py "…"`).
 
-CISA Advisories──┤                                              │         │
-
-MITRE ATT&CK  ──┘                                        ChromaDB     BM25 Index
-
-(Google Drive persistent)
-ONLINE (per query)
-
-──────────────────────────────────────────────────────
-
-User Query
-
-│
-
-┌───▼───────────────┐
-
-│  Input Scanner     │  ── blocks direct prompt injection
-
-└───┬───────────────┘
-
-│
-
-┌───▼───────────────────────────────────────────┐
-
-│  LangGraph Agent                              │
-
-│  ┌─────────────┐   simple  ──► Single RAG     │
-
-│  │  Classifier │   multi_hop ► Decomposer     │
-
-│  │             │   ambiguous ► Clarify         │
-
-│  └─────────────┘   out_scope ► Refuse          │
-
-└───────────────────────────────────────────────┘
-
-│
-
-┌───────────▼───────────────────────────────┐
-
-│  Dual Retrieval (parallel)                │
-
-│  Dense (ChromaDB) + BM25 ─► RRF ─► Rerank│
-
-└───────────────────────────────────────────┘
-
-│
-
-┌───────────▼──────────────┐
-
-│  Chunk Scanner            │  ── blocks poisoned corpus docs
-
-└───────────────────────────┘
-
-│
-
-┌───────────▼──────────────────────────────────────┐
-
-│  Gemini 1.5 Flash                                │
-
-│  System prompt: citation rules + spotlighting    │
-
-│  Fallback: Mistral-7B via HuggingFace            │
-
-└──────────────────────────────────────────────────┘
-
-│
-
-┌───────────▼──────────────┐
-
-│  Output Validator         │  ── groundedness check (token overlap)
-
-└───────────────────────────┘
-
-│
-
-┌───────────▼─────────────────────────────────────┐
-
-│  Structured Answer                               │
-
-│  { answer, citations[], confidence, refusal }    │
-
-└──────────────────────────────────────────────────┘
-
----
-
-## Tech Stack
-
-| Layer | Tool | Why |
-|-------|------|-----|
-| PDF parsing | `pdfplumber` | Preserves NIST table structure |
-| STIX parsing | `stix2` | Official MITRE ATT&CK parser |
-| HTML parsing | `requests` + `BeautifulSoup` | Structured CISA advisory field extraction |
-| Embedding model | `BAAI/bge-small-en-v1.5` | Outperforms MiniLM on BEIR benchmarks (Zhang et al., 2023) |
-| Vector store | `ChromaDB` (persistent) | Survives Colab session resets via Google Drive mount |
-| Sparse index | `rank_bm25` | Exact match for CVE IDs, technique IDs, vendor names |
-| Fusion | Custom RRF (k=60) | Proven to outperform weighted score merging (Cormack et al., 2009) |
-| Reranker | `cross-encoder/ms-marco-MiniLM-L-6-v2` | Joint query-chunk scoring, ~80ms on T4 |
-| Agent | `LangGraph` | Stateful conditional routing + retry loops |
-| LLM (primary) | `Gemini 1.5 Flash` | 1M context, fast, free tier |
-| LLM (fallback) | `Mistral-7B-Instruct` via HuggingFace | Automatic fallback on Gemini 429 error |
-| Evaluation | `RAGAS` | Faithfulness, Answer Relevance, Context Precision, Context Recall |
-| Interface | `Gradio` | ChatInterface demo for submission video |
-
----
-
-## Quick Start
-
-### 1. Open in Google Colab
-
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/vector-cartel/vector-cartel/blob/main/notebooks/secureops_pipeline.ipynb)
-
-### 2. Mount Google Drive
-
-The first cell mounts Google Drive. This is **mandatory** — ChromaDB persists vectors to Drive. Without it, all vectors are lost on session reset.
+**Integrating with the agent layer** — import the contract entry point:
 
 ```python
-from google.colab import drive
-drive.mount('/content/drive')
+from retrieval import build_retrieval_fn        # or: from retrieval import retrieve
+retrieval_fn = build_retrieval_fn()              # retrieval_fn(query) -> List[ChunkDict]
 ```
 
-### 3. Add Your Gemini API Key
+---
 
-In Colab: **Secrets** (🔑 icon, left sidebar) → **Add new secret**
-- Name: `GEMINI_API_KEY`
-- Value: your key from [aistudio.google.com](https://aistudio.google.com)
+## 1. The baseline (Tier 1 Starter) and its known weaknesses
 
-Never hardcode API keys in the notebook.
+The starter is a complete, deliberately naive, end-to-end RAG pipeline. Its data path:
 
-### 4. Install Dependencies
+| Stage | Starter approach |
+|---|---|
+| **Corpus** | 2 NIST PDFs + **~20 CISA advisories** scraped from an RSS feed with BeautifulSoup; falls back to **3 hard-coded sample advisories** if the scrape fails. **No MITRE ATT&CK.** |
+| **Advisory text** | `main.get_text()` flattens the whole HTML page into **one run-on string** — navigation, legal footers, and content all mixed together. Stored in a single `cisa_advisories.json` blob. |
+| **PDF parsing** | `extract_text()` per page, kept as-is including running headers/footers; page number = raw PDF index. |
+| **Chunking** | **Fixed-size character chunking**: `CHUNK_SIZE=1000`, `CHUNK_OVERLAP=150`, applied identically to a 300-page standard and a 1-page advisory. Slices sentences and CVSS tables mid-content. |
+| **Metadata** | `{source, page}` only. No vendor, CVSS, CVE, date, or technique fields. |
+| **Embedding** | `all-MiniLM-L6-v2`. |
+| **Retrieval** | Pure dense top-5. No keyword/BM25, no reranking, no metadata filtering. |
+
+The starter itself flags these as the Tier 2/3 improvement targets: structure-aware chunking,
+per-document-type sizing, hybrid search, reranking, metadata filtering, and ATT&CK ingestion.
+This pipeline addresses every one of them on the data/input side.
+
+---
+
+## 2. Our pipeline at a glance
+
+```
+ ┌─────────────────────────────────────────────────────────────────────────┐
+ │ STAGE 1  CAPTURE  (0_data_download.ipynb, Steps 1-3)                      │
+ │   NIST PDFs · 100 CISA advisories (crawl4ai) · 97 ATT&CK techniques (STIX)│
+ │   →  corpus/   "bronze" — faithful raw capture, YAML frontmatter          │
+ ├─────────────────────────────────────────────────────────────────────────┤
+ │ STAGE 2  CLEAN   (0_data_download.ipynb, Step 4)                          │
+ │   strip boilerplate / citations / link noise                             │
+ │   →  new_corpus/  "silver" — 43% smaller advisories, content preserved    │
+ ├─────────────────────────────────────────────────────────────────────────┤
+ │ STAGE 3  INGEST  (ingestion.py)                                          │
+ │   parse frontmatter · clean PDF headers/footers · recover printed page    │
+ │   →  List[Document]  — 543 uniform units with rich metadata               │
+ ├─────────────────────────────────────────────────────────────────────────┤
+ │ STAGE 4  CHUNK   (chunking.py, see §6)                                    │
+ │   per-source structure-aware + record + parent-child + contextual headers │
+ │   →  chunks.jsonl  — 2,462 ChunkDicts (contract shape)                    │
+ ├─────────────────────────────────────────────────────────────────────────┤
+ │ STAGE 5  INDEX   (index.py, see §7)                                       │
+ │   bge-base embeddings → ChromaDB (cosine)  +  BM25 keyword index           │
+ │   →  index_store/  — two indexes keyed by chunk_id                        │
+ ├─────────────────────────────────────────────────────────────────────────┤
+ │ STAGE 6  RETRIEVE (retrieval.py, see §8)                                  │
+ │   dense top-20 + BM25 top-20 → RRF fusion → cross-encoder rerank → top-5   │
+ │   →  retrieval_fn(query) -> List[ChunkDict]   (contract entry point)      │
+ ├─────────────────────────────────────────────────────────────────────────┤
+ │ EVAL     (eval.py, see §9)   54-query gold set → Hit@5 98%, MRR 0.849      │
+ └─────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 3. Stage 1 — Corpus capture (`0_data_download.ipynb`, Steps 1–3)
+
+Three open, publicly-licensed sources, each saved in a retrieval-friendly format.
+
+| Source | What & how | vs. baseline |
+|---|---|---|
+| **NIST SP 800-82 Rev. 3** (PDF, ~300 pp) | Downloaded from NIST public servers. | Same. |
+| **NIST CSF 2.0** (PDF, ~32 pp) | Downloaded from NIST public servers. | Same. |
+| **CISA ICS advisories** | **100** advisories crawled with **`crawl4ai`**, each saved as an **individual `.md` file with YAML frontmatter** (`vendor`, `cvss_score`, `cves`, `cwe`, `release_date`, `sectors`, `url`). | Baseline: ~20 via RSS + BeautifulSoup → **flattened** into one JSON blob, no structured metadata. We have **5× the advisories**, structure preserved, and frontmatter that enables metadata filtering. |
+| **MITRE ATT&CK for ICS** | **97** techniques/sub-techniques parsed from the official **STIX 2.1** bundle, each an `.md` file with frontmatter (`technique_id`, `tactics`, `platforms`, `is_subtechnique`, `parent_technique`) and linked mitigations. | Baseline: **not present at all** — the starter cannot answer the brief's ATT&CK question. |
+
+**Key implementation choices**
+- **`crawl4ai` over BeautifulSoup** — preserves the advisory's Markdown structure (section headings, CVSS tables, affected-product lists) instead of flattening to a run-on string. Structure is what makes Stage 4 chunking possible.
+- **STIX bundle over web scraping** for ATT&CK — one deterministic download, no brittle HTML parsing; relationships (`mitigates`) are resolved to attach mitigations to each technique.
+- **One file per record + YAML frontmatter** — human-inspectable, diff-able, and the frontmatter becomes structured metadata downstream (the baseline's single JSON blob supports none of this).
+
+---
+
+## 4. Stage 2 — Cleaning into `new_corpus/` (`0_data_download.ipynb`, Step 4)
+
+A **bronze → silver** layer. `corpus/` stays the faithful raw capture; `new_corpus/` is the cleaned
+layer the pipeline actually reads. Separating capture from cleaning keeps the pipeline reproducible
+and the raw data re-inspectable. This step **reads the already-downloaded files** (no re-scrape), so
+it is deterministic and runs in seconds.
+
+**Why it matters:** roughly **40% of every CISA advisory page is boilerplate** — legal notices,
+revision-history tables, "Related Advisories", and the cisa.gov site footer (social links,
+FOIA/USA.gov nav, empty tables). The generic *Recommended Practices* paragraph is also near-identical
+across all 100 advisories. Embedded as-is, that junk would create ~100 near-duplicate chunks that
+pollute similarity search and waste the embedder's limited token budget.
+
+| Source | Cleaning applied | Result |
+|---|---|---|
+| CISA advisories | Truncate at the first boilerplate marker (Legal Notice / Revision History / Tags / Related Advisories / footer); strip `(link is external)`, nav links, and `[label](url)` → `label`. Content sections (Summary, Background, per-CVE Vulnerabilities, Affected Products, Metrics, Acknowledgments, General Recommendations) kept. | **2.10 MB → 1.20 MB (43% smaller)** |
+| MITRE ATT&CK | Remove inline `(Citation: …)` markers; unwrap mitigation cross-links to their labels. | **294 KB → 264 KB (10% smaller)** |
+| NIST PDFs | Copied through unchanged — PDFs are binary; their header/footer/page cleaning happens at **parse** time in Stage 3. | — |
+
+**vs. baseline:** the starter performs **no cleaning whatsoever** — the flattened advisory string
+includes every nav element and legal footer, and they all get embedded.
+
+---
+
+## 5. Stage 3 — Ingestion (`ingestion.py`)
+
+The adapter layer: messy, source-specific files in → one uniform structure out. It does **not**
+chunk, embed, or retrieve. Verified end-to-end against `new_corpus/`:
+
+```
+Total document units: 543
+source_type   count  avg_chars  total_chars
+nist_pdf        346       2208       763826
+advisory        100      11550      1154958
+attck            97       2488       241295
+```
+
+**The uniform unit** (a `@dataclass Document`): `text`, `source_type`, `doc`, `page`, `metadata`,
+`source_path`. The `metadata` dict is the seed for the contract's `ChunkDict` metadata.
+
+**Per-source parsing**
+- **Advisories / ATT&CK** — split YAML frontmatter from body (PyYAML when available, with a
+  corpus-tuned fallback parser so there is no hard dependency); typed metadata extracted
+  (`vendor`, `cvss`, `cves`, `technique_id`, `tactic`, `is_subtechnique`, …).
+- **NIST PDFs** — one `Document` per non-empty page, with the parse-time cleaning that can only
+  happen here:
+  - **Running headers stripped** per document (`NIST SP 800-82r3 / September 2023 / Guide to OT
+    Security`, `NIST CSWP 29 / …`), matched only in the first few lines so identical phrases in the
+    body are never removed.
+  - **Printed page number recovered** from the page itself and used as the citation `page` — this
+    sidesteps the printed-vs-PDF-index offset (e.g. PDF index 100 = printed page 83) entirely.
+  - **Figure-only pages skipped** (cleaned text below a length threshold).
+
+**Production-grade engineering**
+- Full type hints, `@dataclass(slots=True)` with validation, module/function docstrings, `__all__`.
+- **Fault isolation** — a single malformed file logs an exception and is skipped; the run continues.
+- A CLI for inspection: `python ingestion.py --corpus new_corpus --sample -v`.
+
+**Two bugs caught during verification**
+1. **Page-number leak** — `pypdf` emits the printed number `83` as the *first* line of a page (text
+   order ≠ visual order), not the last. The initial "last-line only" check missed it; fixed to check
+   **both ends**, so SP 800-82 now correctly reports printed page **83** and CSF reports **17**.
+2. Confirmed a `�` in console output was only a Windows cp1252 *display* artifact — the stored
+   character is a valid `U+2013 EN DASH` (UTF-8 intact).
+
+**vs. baseline:** the starter's `extract_pdf_pages` keeps headers/footers in the text, uses the raw
+PDF index as the page number, and has no metadata beyond `{source, page}`; advisories arrive as one
+flat string with no fields at all.
+
+---
+
+## 6. Stage 4 — Chunking strategy (`chunking.py`, design finalised)
+
+> **Status: implemented and verified** (`chunking.py`). Consumes Stage 3 `Document`s and emits
+> `ChunkDict`s. **543 documents → 2,462 chunks**, all within the **480-token** budget (the 512-token
+> cap shared by the bge embedders; max observed 479), all passing `contracts.validate_chunk`, with
+> 402 ATT&CK parent-child links intact. Written to `chunks.jsonl` as the single source both the
+> Chroma and BM25 indexes build from.
+
+**The hard constraint:** the contract *suggests* the embedder **`bge-small-en-v1.5`**, which has a
+**512-token cap** — anything longer is silently truncated at embed time. Advisories average 11.5k
+chars and the largest is 388 KB, so whole-document chunking is impossible. This *forces*
+structure-aware splitting.
+
+**Sizing is measured in TOKENS, not characters or words.** The model truncates on a *token* budget,
+and the unit you measure must match it. Characters and especially words are unreliable proxies for
+security text: a single CVSS vector `CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H` is **one "word"
+but ~26 tokens**, and a CVE ID `CVE-2026-27668` is one word but 7 tokens. Word/char budgets therefore
+*under*-count exactly the security-dense chunks we least want truncated. So `chunking.py` measures
+every chunk with the embedder's **own tokenizer** via `count_tokens()`, with a graceful fallback
+chain: `transformers:BAAI/bge-small-en-v1.5` → `tiktoken:cl100k_base` → heuristic `chars/3.3`. The
+config: **`max_tokens=480`** (480, not 512, leaves room for the `[CLS]`/`[SEP]` special tokens added
+at embed time), **`overlap_tokens=50`**, **`min_tokens=12`** (drops meaningless fragments).
+
+**The chunking is hybrid — a different method per source:**
+
+| Source | Chunking method | `section` metadata |
+|---|---|---|
+| **CISA advisories** | **Structure-aware** (split on `##`) **+ record-based**: the `Vulnerabilities` section is exploded into **one chunk per `### CVE-…` block** (description + affected products + CVSS together) — turning the 388 KB multi-CVE monster into ~40 precise units. | heading / CVE ID |
+| **MITRE ATT&CK** | **Parent–child**: `## Description` = parent chunk; each `### <Mitigation>` = a child chunk. | `technique_id` (+ mitigation name) |
+| **NIST SP 800-82** | **Recursive splitting** within each page (paragraph → sentence), up to the 480-token budget with ~50-token overlap. | nearest numbered heading (e.g. `5.3.7.2`) |
+| **NIST CSF 2.0** | **Record-based with hierarchical context**: one chunk per Subcategory with prepended lineage `GOVERN (GV) › Roles… (GV.RR) › GV.RR-01: …`; plus one summary chunk per Function. | subcategory code (e.g. `GV.RR-01`) |
+
+**Three Tier-3 layers applied to every chunk**
+1. **Contextual headers** — a deterministic, template-based header is prepended before embedding so
+   small chunks stay self-describing, e.g. `[CISA Advisory ICSA-26-111-02 · Siemens RUGGEDCOM SAM-P
+   · CVE-2026-27668 · CVSS 8.8]`. (Template chosen over per-chunk LLM generation: ~80% of the benefit
+   at zero cost/latency and fully reproducible — important under the deadline.)
+2. **Parent–child ("small-to-big")** — retrieve the small precise child, hand the larger parent to
+   the generator.
+3. **Rich, filterable metadata** — `doc`, `section`, `page`, plus `vendor` / `date` / `cvss` /
+   `technique_id` / `tactic`, feeding the contract's hybrid + metadata-filter retrieval. List fields
+   (`cves`, `sectors`) are flattened to comma-strings because **ChromaDB metadata must be scalar**.
+
+**Output (contract `ChunkDict`):**
+```python
+{"text": "<contextual header>\n<chunk body>",
+ "metadata": {"doc": ..., "section": ..., "page": ..., "vendor": ..., "cvss": ...},
+ "score": 0.0}   # score is assigned at retrieval time, not here
+```
+
+**vs. baseline:** fixed 1000-char cuts that slice sentences/tables and treat every document type
+identically, with no structure, no per-CVE granularity, no context headers, and no rich metadata.
+
+---
+
+## 7. Stage 5 — Index build (`index.py`)
+
+> **Status: implemented and verified.** Reads `chunks.jsonl` once and builds the two indexes the
+> hybrid retriever needs, both keyed by `chunk_id` so their results can be fused. Verified:
+> **2,462 vectors (768-dim) + BM25 over 2,462 chunks**.
+
+The retriever is **hybrid** by design, and the two halves are complementary:
+
+| Index | Built from | Captures |
+|---|---|---|
+| **Dense** — ChromaDB (cosine) | `bge-base-en-v1.5` embeddings of each chunk's `text` | **semantics** — "privilege escalation", "network segmentation" |
+| **Sparse** — BM25 | identifier-preserving tokens of the same `text` | **exact identifiers** — `CVE-2026-27668`, `GV.RR-01`, `CWE-266` |
+
+**Why hybrid, and why no security-specific embedder.** Dense embeddings are weak on arbitrary
+identifiers (a model cannot "understand" a CVE number — it sees rare subword fragments). Classical
+BM25 matches them exactly. So BM25 owns identifier lookup and the embedder only has to be good at
+semantic prose — which general MTEB-strong models already are. This is precisely why no exotic /
+domain-tuned embedder is needed.
+
+**Embedding-model choice.** `EMBED_MODEL` is a **single swappable constant**, defaulting to
+**`bge-base-en-v1.5`** (768-dim) — a deliberate, defensible upgrade from the contract's suggested
+`bge-small`: same family, **same 512-token cap** the chunker is already sized to, but stronger
+retrieval. Falling back to `bge-small` is a one-line change with no other edits. (nomic / mxbai /
+arctic were considered; their gaps are small, the reranker washes most of it out, and bge-base is the
+best quality/latency balance — a decision the §9 eval can revisit with numbers.)
+
+**Two details that silently destroy recall if wrong** — both handled here and reused at query time:
+1. **Query instruction.** BGE expects the *query* (not the documents) to be prefixed with
+   `"Represent this sentence for searching relevant passages: "`. Exposed via `embed_query`.
+2. **Normalisation + cosine.** Vectors are L2-normalised and ChromaDB is set to `hnsw:space=cosine`.
+
+`tokenize_for_bm25` keeps security identifiers whole (`cve-2026-27668` stays one token) and is
+**exported** so retrieval tokenises queries identically. A NIST `chunk_id` collision (front-matter
+pages whose printed number was unrecovered fall back to the PDF index and clash with body pages of
+the same number) was caught here and fixed by folding the page's document-position into the id —
+**2,462 / 2,462 ids now unique.**
+
+---
+
+## 8. Stage 6 — Retrieval (`retrieval.py`)
+
+> **Status: implemented and verified on GPU.** Implements the contract's
+> `retrieval_fn(query) -> List[ChunkDict]`.
+
+```
+query
+  → embed_query (bge-base, query instruction)        ┐
+  → ChromaDB cosine        top-20   (dense)          │
+  → BM25 keyword           top-20   (sparse)         ┘
+  → RRF fusion (by chunk_id) → top-30 candidates
+  → cross-encoder rerank   → top-5
+  → score = sigmoid(logit) ∈ [0,1] · validate_chunk · return (ordered desc)
+```
+
+- **RRF fusion** combines the two rankings using **rank position only** (`1/(k+rank)`, `k=60`), so a
+  cosine distance and a BM25 score — which live on incomparable scales — merge cleanly without any
+  normalisation hand-tuning.
+- **Cross-encoder rerank** (`RERANK_MODEL = bge-reranker-base`, swappable) reads `(query, chunk)`
+  *together* and is far more accurate than either first-stage retriever; it is the final arbiter over
+  the small fused candidate pool. Its logit is squashed with a sigmoid into the `[0,1]` the contract
+  requires for `score`.
+- **Contract-safe:** returns `[]` on empty/error, **never raises**, every returned chunk passes
+  `validate_chunk`, and `RETRIEVAL_CONFIDENCE_THRESHOLD` (0.35) is **imported, never hardcoded**. By
+  default the top-5 are returned and the agent's verifier decides confidence; `min_score` optionally
+  hard-filters.
+- `build_retrieval_fn(...)` builds the function once (indexes + reranker injectable for tests);
+  `retrieve(q)` is a lazy-singleton convenience.
+
+**Runs on GPU** via the `GAN` conda env (CUDA `torch`); the CPU-built `index_store/` is portable
+across envs (identical dependency versions). ~**0.63 s/query** on an RTX 4060.
+
+---
+
+## 9. Stage 7 — Evaluation (`eval.py`)
+
+> **Status: implemented and run.** Turns "it looks good" into a defensible number.
+
+A **54-query hand-curated gold set**, grounded in real corpus targets (advisory CVEs/alert-codes,
+ATT&CK technique-ids, NIST CSF codes and SP 800-82 prose). For each query the real `retrieval_fn`
+runs and we record the rank of the first **relevant** chunk (relevance judged by an exact/substring
+match spec on metadata + text).
+
+| Metric | Overall | advisory | attck | nist_csf | nist_sp80082 |
+|---|---|---|---|---|---|
+| **Hit@5** (recall@5) | **98.1%** | 100% | 100% | 100% | 90% |
+| Hit@1 | 74.1% | 56% | 89% | 62% | 90% |
+| MRR | 0.849 | 0.750 | 0.944 | 0.792 | 0.900 |
+
+*(bge-base + bge-reranker-base, 0.57 s/query, 1 miss in 54.)*
+
+**Reading the result.** Recall@5 is 100% on three of four source groups; only SP 800-82 prose has a
+single miss — "incident response and contingency planning" ranked an ATT&CK *Data Backup* mitigation
+above the NIST prose, a reasonable cross-source semantic collision (the gold was **not** loosened to
+inflate the score). Advisory Hit@1 (56%) is a gold-spec artifact rather than a retrieval failure: the
+*summary* chunk of the correct advisory often ranks #1 while the strict match demands the specific
+per-CVE chunk (always present by #2 — hence 100% Hit@5). The optional, already-built NIST
+`add_llm_context()` hook in `chunking.py` is the lever to push the remaining NIST prose case, with
+this run as the baseline to measure any delta against.
+
+---
+
+## 10. Baseline vs. this pipeline — summary
+
+| Dimension | Tier 1 Starter | This pipeline |
+|---|---|---|
+| Advisories | ~20 (or 3 fallback), flattened JSON | **100**, structured `.md` + YAML frontmatter |
+| MITRE ATT&CK | ❌ none | ✅ **97** techniques from STIX |
+| Boilerplate removal | ❌ none | ✅ bronze→silver, **43%** advisory reduction |
+| PDF headers/footers | kept in text | ✅ stripped |
+| Page citation | raw PDF index | ✅ **printed page** recovered |
+| Document metadata | `{source, page}` | ✅ vendor, cvss, cves, date, technique_id, tactic… |
+| Chunking | fixed 1000-char, uniform | ✅ **per-source** structure/record/parent-child |
+| Chunk sizing | character count (truncation-blind) | ✅ **token-based** via the embedder's own tokenizer |
+| Self-describing chunks | ❌ | ✅ contextual headers |
+| Embedding model | `all-MiniLM-L6-v2` | **`bge-base-en-v1.5`** (swappable) |
+| Retrieval | dense top-5 only | ✅ **hybrid** (dense + BM25) → RRF → cross-encoder rerank |
+| Retrieval quality | not measured | ✅ **Hit@5 98% / MRR 0.849** on a 54-query gold set |
+
+---
+
+## 11. How to run
 
 ```bash
-pip install -r requirements.txt
+# 1. Capture + clean the corpus (produces corpus/ then new_corpus/)
+#    Run 0_data_download.ipynb top to bottom (Steps 1-4).
+
+# 2. Ingest the cleaned corpus into uniform Document units
+pip install pypdf            # plus pyyaml (optional, recommended)
+python ingestion.py --corpus new_corpus --sample -v
+
+# 3. Chunk the documents into contract-shaped ChunkDicts (writes chunks.jsonl)
+python chunking.py --corpus new_corpus --out chunks.jsonl --sample
+
+# 4. Build the hybrid index (ChromaDB + BM25 → index_store/)
+pip install chromadb sentence-transformers rank_bm25
+python index.py --chunks chunks.jsonl --selftest -v
+
+# 5. Query the retriever  (GPU env recommended)
+conda run -n GAN --no-capture-output python retrieval.py "privilege escalation in Siemens RUGGEDCOM" -v
+
+# 6. Evaluate retrieval quality against the gold set
+conda run -n GAN --no-capture-output python eval.py --show-misses
 ```
 
-### 5. Download the Corpus
+> **GPU note.** Embedding + reranking run on CUDA in the `GAN` conda env (RTX 4060). The index store
+> built on CPU is portable across envs, so steps 4–6 can mix CPU build / GPU query freely.
 
-```bash
-bash corpus/download_corpus.sh
+---
+
+## 12. Repository layout
+
+```
+AAI_Hackathon/
+├── 0_data_download.ipynb        # Stage 1-2: capture + clean → new_corpus/
+├── ingestion.py                 # Stage 3: corpus → List[Document]      ✅ done
+├── chunking.py                  # Stage 4: Document → List[ChunkDict]    ✅ done
+├── chunks.jsonl                 # 2,462 ChunkDicts — handoff to index build
+├── index.py                     # Stage 5: chunks → Chroma + BM25        ✅ done
+├── retrieval.py                 # Stage 6: retrieval_fn(query)           ✅ done
+├── eval.py                      # Stage 7: gold-set retrieval eval        ✅ done
+├── index_store/                 # built indexes (chroma/ + bm25.pkl)
+├── contracts.py                 # shared interface contract (ChunkDict, RetrievalFn, …)
+├── corpus/                      # bronze: raw capture
+│   ├── nist_sp800_82r3.pdf
+│   ├── nist_csf_2_0.pdf
+│   ├── advisories/  (100 × .md)
+│   └── attck/       (97 × .md)
+├── new_corpus/                  # silver: cleaned, pipeline reads this
+│   └── … (same structure)
+└── SecureOps_Assistant_Tier1_Starter.ipynb   # the naive baseline
 ```
 
-This fetches NIST SP 800-82 Rev 3, NIST CSF 2.0, CISA ICS advisories (50–100), and MITRE ATT&CK ICS STIX bundle.
+---
 
-### 6. Run All Cells in Order
+## 13. Status
 
-The notebook is structured in order:
-1. Corpus ingestion + chunking
-2. Embedding + indexing
-3. Retrieval pipeline
-4. LangGraph agent + LLM
-5. Security layer
-6. Gradio demo interface
+| Stage | Status |
+|---|---|
+| 1 — Capture | ✅ Complete (2 PDFs + 100 advisories + 97 ATT&CK) |
+| 2 — Clean (`new_corpus/`) | ✅ Complete (verified, 43% advisory reduction) |
+| 3 — Ingestion (`ingestion.py`) | ✅ Complete (543 units, verified end-to-end) |
+| 4 — Chunking (`chunking.py`) | ✅ Complete (2,462 chunks, all contract-valid, within budget) |
+| 5 — Index build (`index.py`) | ✅ Complete (2,462 vectors + BM25, ids unique) |
+| 6 — Retrieval (`retrieval.py`) | ✅ Complete (hybrid + RRF + rerank, contract-shaped) |
+| 7 — Evaluation (`eval.py`) | ✅ Complete (Hit@5 98%, MRR 0.849 on 54-query gold set) |
 
 ---
 
-## Corpus Sources
-
-| Source | URL | Format | What It Covers |
-|--------|-----|--------|----------------|
-| NIST SP 800-82 Rev. 3 | [csrc.nist.gov](https://csrc.nist.gov/pubs/sp/800/82/r3/final) | PDF ~300pp | Core OT security reference |
-| NIST CSF 2.0 | [nist.gov/cyberframework](https://www.nist.gov/cyberframework) | PDF ~60pp | Security framework |
-| CISA ICS Advisories | [cisa.gov/advisories](https://www.cisa.gov/news-events/cybersecurity-advisories) | HTML structured | Real-world vulnerability bulletins |
-| MITRE ATT&CK for ICS | [attack.mitre.org/matrices/ics](https://attack.mitre.org/matrices/ics) | STIX2 JSON | Adversary techniques and tactics |
-
-All sources are public domain (US government works) or openly licensed with attribution (MITRE).
-
----
-
-## Evaluation Results
-
-| Metric | Baseline (starter notebook) | Vector Cartel pipeline | Delta |
-|--------|----------------------------|------------------------|-------|
-| Faithfulness | TBD | TBD | TBD |
-| Answer Relevance | TBD | TBD | TBD |
-| Context Precision | TBD | TBD | TBD |
-| Context Recall | TBD | TBD | TBD |
-
-*Results measured on a 20-question gold QA test set. 5 simple factual · 5 multi-hop cross-document · 5 honesty tests · 5 adversarial injection attempts.*
-
----
-
-## Branch Structure
-main                  ← stable, always runnable — judges use this
-
-dev                   ← integration branch, all members merge here first
-
-├── rag-layer         ← Jay Sadhu + Sana Shikalgar
-
-├── llm-and-agentic   ← SK
-
-└── output-layer      ← Kaveen Prabodhya
-
-**Rules:**
-- Never push directly to `main`
-- Always merge to `dev` first and verify end-to-end before merging `dev` → `main`
-- Each member owns their branch — coordinate on shared interfaces (metadata schema, answer schema) via `dev`
-
----
-
-## Commit Message Guide
-<type>(<scope>): <short description>
-[optional body — what and why, not how]
-
-**Types:**
-
-| Type | When to use |
-|------|-------------|
-| `feat` | New functionality added |
-| `fix` | Bug fixed |
-| `refactor` | Code restructured, no behaviour change |
-| `eval` | Evaluation results or test set updated |
-| `docs` | README, comments, or documentation |
-| `chore` | Requirements, configs, setup |
-| `security` | Security layer changes |
-
-**Good examples:**
-feat(chunking): add section-boundary chunker for NIST SP 800-82
-Splits document at numbered section headers (\n\d+.\d+).
-
-Each chunk carries section_id, section_title, parent_section, page metadata.
-
-Validated: no chunk exceeds 512 tokens, no mid-sentence cuts.
-
-feat(agent): add query classifier node with 4-way routing
-Gemini Flash structured output returns simple/multi_hop/out_of_scope/ambiguous.
-
-Refusal node triggers before any retrieval on out_of_scope queries.
-
-Cost: ~100 tokens per classification call.
-
-fix(retrieval): fix RRF score accumulation for duplicate chunk IDs
-Chunks appearing in both dense and BM25 results were being overwritten
-
-instead of having scores summed. Fixed with dict .get(id, 0) + score.
-
-eval(ragas): add baseline scores on 20 QA gold test set
-Faithfulness: 0.61, Answer Relevance: 0.58, Context Precision: 0.54.
-
-Baseline = starter notebook with naive chunking and dense-only retrieval.
-
-security(scanner): implement chunk scanner for poisoned document detection
-Scans top-5 retrieved chunks for injection patterns before LLM call.
-
-Patterns: ignore, disregard, override, system:, [INST], forget previous.
-
-Tested against poisoned_advisory.html — correctly quarantines flagged chunk.
-
-**Bad examples — never do this:**
-fixed stuff
-
-update
-
-wip
-
-final version
-
-Commit after every meaningful unit of work. Small commits are easier to debug than one massive end-of-day dump.
-
----
-
-## File Structure
-vector-cartel/
-
-│
-
-├── README.md
-
-├── requirements.txt
-
-├── .gitignore
-
-│
-
-├── notebooks/
-
-│   └── secureops_pipeline.ipynb       # main Colab notebook
-
-│
-
-├── src/
-
-│   ├── ingestion.py                   # Jay — PDF + HTML + STIX parsing
-
-│   ├── chunking.py                    # Jay — structure-aware chunkers per source
-
-│   ├── retrieval.py                   # Sana — BM25 + dense + RRF + reranker
-
-│   ├── agent.py                       # SK — LangGraph StateGraph
-
-│   ├── llm.py                         # SK — Gemini integration + backoff + fallback
-
-│   ├── prompts.py                     # SK — system prompt engine + spotlighting
-
-│   ├── security.py                    # Kaveen — input/chunk scanner + output validator
-
-│   ├── answer.py                      # Kaveen — Pydantic answer schema
-
-│   └── evaluation.py                  # Kaveen — RAGAS harness + baseline comparison
-
-│
-
-├── corpus/
-
-│   └── download_corpus.sh
-
-│
-
-├── data/
-
-│   ├── qa_test_set.csv
-
-│   └── poisoned_advisory.html
-
-│
-
-├── evaluation/
-
-│   └── ragas_results.json
-
-│
-
-├── docs/
-
-│   ├── architecture.png
-
-│   └── AI_usage_statement.md
-
-│
-
-└── pitch/
-
-└── vector_cartel_pitch.pdf
-
----
-
-## AI Usage Statement
-
-| Tool | Used For |
-|------|----------|
-| Claude (Anthropic) | Architecture design, system prompt engineering, documentation, debugging guidance |
-| GitHub Copilot | Boilerplate code generation, autocomplete |
-| Gemini (Google) | Primary LLM for the system itself |
-
-All architectural decisions, evaluation design, red-teaming strategy, and system understanding are the team's own. Every team member can explain every component of the system.
-
----
-
-## Submission Checklist
-
-- [ ] Public GitHub repository accessible to judges
-- [ ] `notebooks/secureops_pipeline.ipynb` runs end-to-end in Google Colab
-- [ ] `corpus/download_corpus.sh` successfully downloads all sources
-- [ ] `requirements.txt` installs all dependencies without errors
-- [ ] Demo video (60–90 seconds) linked below
-- [ ] Pitch slides linked below
-- [ ] AI usage statement complete
-- [ ] RAGAS results filled in above
-
-**Demo video:** [link TBD]  
-**Pitch slides:** [link TBD]
-
----
-
-## Deadline
-
-**Submission:** 23 June 2026, 13:00  
-**Pitch event:** 23 June 2026, 14:00 — IMC004
-
----
-
-<div align="center">
-
-*Built by Vector Cartel · AAI Tech Talks Hackathon 2026 · WMG, University of Warwick*
-
-</div>
+## 14. Licensing & attribution
+
+| Source | Licence |
+|---|---|
+| NIST SP 800-82 Rev. 3 / NIST CSF 2.0 | Public domain (US government work) |
+| CISA ICS Advisories | Public domain (US government work) |
+| MITRE ATT&CK for ICS | Free with attribution (cite MITRE) |
