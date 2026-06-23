@@ -49,12 +49,12 @@ fields (cves, sectors) are flattened to comma-strings and None values dropped.
 
 USAGE
 -----
-    from chunking import chunk_corpus
-    from ingestion import load_corpus
+    from src.chunking import chunk_corpus
+    from src.ingestion import load_corpus
     chunks = chunk_corpus(load_corpus("new_corpus"))
 
-    # or from the command line:
-    python chunking.py --corpus new_corpus --sample --out chunks.jsonl
+    # or from the command line (run as a module from the repo root):
+    python -m src.chunking --corpus new_corpus --sample --out chunks.jsonl
 ================================================================================
 """
 
@@ -68,7 +68,7 @@ from math import ceil
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from ingestion import Document, load_corpus
+from src.ingestion import Document, load_corpus
 
 logger = logging.getLogger("secureops.chunking")
 
@@ -79,7 +79,7 @@ __all__ = [
 
 # Optional: validate against the shared contract if it is importable.
 try:
-    from contracts import validate_chunk  # type: ignore
+    from src.contracts import validate_chunk  # type: ignore
 
     _HAVE_CONTRACT = True
 except Exception:  # noqa: BLE001 - contracts may pull optional deps

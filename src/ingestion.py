@@ -34,11 +34,12 @@ later, at chunk time, because they depend on the chunking strategy.
 
 USAGE
 -----
-    from ingestion import load_corpus
+    from src.ingestion import load_corpus
     docs = load_corpus("new_corpus")          # List[Document]
 
-    # or from the command line, to inspect the corpus:
-    python ingestion.py --corpus new_corpus --sample
+    # or from the command line, to inspect the corpus (run as a module
+    # from the repo root):
+    python -m src.ingestion --corpus new_corpus --sample
 ================================================================================
 """
 

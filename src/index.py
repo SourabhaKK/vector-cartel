@@ -38,11 +38,12 @@ time (mismatched query handling silently destroys recall).
 
 USAGE
 -----
-    # build (one-off, re-run when chunks.jsonl changes):
-    python index.py --chunks chunks.jsonl --selftest -v
+    # build (one-off, re-run when chunks.jsonl changes; run as a module
+    # from the repo root):
+    python -m src.index --chunks chunks.jsonl --selftest -v
 
     # from retrieval.py:
-    from index import load_indexes, embed_query, tokenize_for_bm25
+    from src.index import load_indexes, embed_query, tokenize_for_bm25
     idx = load_indexes()
     dense = idx.collection.query(query_embeddings=[embed_query(q)], n_results=20)
     bm25_scores = idx.bm25.get_scores(tokenize_for_bm25(q))

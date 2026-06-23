@@ -38,16 +38,16 @@ CONTRACT GUARANTEES (see contracts.py)
 
 USAGE
 -----
-    from retrieval import retrieve            # convenience (lazy singletons)
+    from src.retrieval import retrieve        # convenience (lazy singletons)
     chunks = retrieve("privilege escalation in Siemens RUGGEDCOM")
 
     # or, explicit (preferred for the agent — build once, inject):
-    from retrieval import build_retrieval_fn
+    from src.retrieval import build_retrieval_fn
     retrieval_fn = build_retrieval_fn()
     chunks = retrieval_fn(query)
 
-    # CLI:
-    python retrieval.py "how do I mitigate T0836?" -v
+    # CLI (run as a module from the repo root, now that this lives under src/):
+    python -m src.retrieval "how do I mitigate T0836?" -v
 ================================================================================
 """
 
@@ -58,7 +58,7 @@ import logging
 import math
 from typing import Any, Callable, Dict, List, Optional
 
-from index import Indexes, embed_query, load_indexes, tokenize_for_bm25
+from src.index import Indexes, embed_query, load_indexes, tokenize_for_bm25
 
 logger = logging.getLogger("secureops.retrieval")
 
@@ -66,7 +66,7 @@ __all__ = ["build_retrieval_fn", "retrieve", "rrf_fuse", "RERANK_MODEL"]
 
 # Optional contract import (validate + shared threshold).
 try:
-    from contracts import RETRIEVAL_CONFIDENCE_THRESHOLD, validate_chunk
+    from src.contracts import RETRIEVAL_CONFIDENCE_THRESHOLD, validate_chunk
 except Exception:  # noqa: BLE001 - allow standalone runs
     RETRIEVAL_CONFIDENCE_THRESHOLD = 0.35
 

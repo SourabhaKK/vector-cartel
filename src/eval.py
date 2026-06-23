@@ -29,8 +29,8 @@ Targets were sampled from the live corpus, so every gold answer exists.
 
 USAGE
 -----
-    conda run -n GAN --no-capture-output python eval.py -v
-    python eval.py --show-misses        # also print the top hit for each miss
+    conda run -n GAN --no-capture-output python -m src.eval -v
+    python -m src.eval --show-misses    # also print the top hit for each miss
 ================================================================================
 """
 
@@ -41,10 +41,10 @@ import logging
 import time
 from typing import Any, Dict, List, Optional
 
-from retrieval import build_retrieval_fn
+from src.retrieval import build_retrieval_fn
 
 try:
-    from contracts import RETRIEVAL_CONFIDENCE_THRESHOLD
+    from src.contracts import RETRIEVAL_CONFIDENCE_THRESHOLD
 except Exception:  # noqa: BLE001
     RETRIEVAL_CONFIDENCE_THRESHOLD = 0.35
 
