@@ -138,6 +138,14 @@ class GeminiClient:
                     config={
                         "temperature": 0.0,
                         "max_output_tokens": max_tokens,
+                        # gemini-2.5-flash's "thinking" feature consumes
+                        # output tokens on internal reasoning by default
+                        # (verified: ~980 of a 1024 budget went to
+                        # thoughts_token_count, leaving the answer cut off
+                        # mid-sentence with finish_reason=MAX_TOKENS).
+                        # Disabling it keeps the full max_output_tokens
+                        # budget for the actual visible answer.
+                        "thinking_config": {"thinking_budget": 0},
                     },
                 )
                 self._call_timestamps.append(time.time())

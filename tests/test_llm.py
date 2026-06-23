@@ -59,6 +59,28 @@ def test_gemini_generate_passes_max_tokens(mocker):
     assert kwargs["config"]["max_output_tokens"] == 512
 
 
+def test_gemini_generate_disables_thinking_budget(mocker):
+    """
+    Regression test: gemini-2.5-flash's "thinking" feature consumes
+    output tokens on internal reasoning by default, which was verified
+    against the real API to truncate answers mid-sentence (980 of a
+    1024 token budget spent on thoughts_token_count, finish_reason=
+    MAX_TOKENS). thinking_budget=0 must always be passed to keep the
+    full token budget for the actual visible answer.
+    """
+    from src.llm import GeminiClient
+
+    mock_genai = mocker.patch("src.llm.genai")
+    mock_client = mock_genai.Client.return_value
+    mock_client.models.generate_content.return_value.text = "test response"
+
+    client = GeminiClient(api_key="fake-key")
+    client.generate("system prompt", "user query")
+
+    _, kwargs = mock_client.models.generate_content.call_args
+    assert kwargs["config"]["thinking_config"]["thinking_budget"] == 0
+
+
 def test_exponential_backoff_sleep_durations(mocker):
     from src.llm import GeminiClient
 
