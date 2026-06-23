@@ -594,6 +594,33 @@ def test_run_agent_out_of_scope_never_calls_retrieval(mocker):
     assert retrieval_fn.call_count == 0
 
 
+def test_run_agent_refusal_flag_set_when_simple_path_lands_on_refusal_string(
+    mocker,
+):
+    """
+    Regression test: discovered live with a real API key. A query
+    classified "simple" (not "out_of_scope") can still have its
+    synthesize_answer LLM call independently produce REFUSAL_STRING
+    as the answer (the model honestly declining per SAFETY_RULES,
+    rather than the graph routing through handle_refusal). Before
+    this fix, state["refusal"] stayed False in that case -- a
+    caller trusting only the refusal flag would wrongly read this
+    as "the system answered".
+    """
+    from src.agent import REFUSAL_STRING, run_agent
+
+    mock_llm = mocker.Mock()
+    mock_llm.generate_json.return_value = {"query_type": "simple"}
+    mock_llm.generate.return_value = REFUSAL_STRING
+
+    retrieval_fn = mocker.Mock(return_value=[])
+
+    result = run_agent("some query", mock_llm, retrieval_fn)
+
+    assert result.answer == REFUSAL_STRING
+    assert result.refusal is True
+
+
 def test_run_agent_ambiguous_never_calls_retrieval(mocker):
     from src.agent import run_agent
 

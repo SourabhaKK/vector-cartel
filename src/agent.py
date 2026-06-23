@@ -639,6 +639,20 @@ def run_agent(query: str, llm_router: LLMRouter, retrieval_fn: Callable):
     this through format_response as-is — it does not currently
     display clarification distinctly from a normal answer.
 
+    REFUSAL FLAG NOTE — synced to answer text, not just the
+    out_of_scope path: state["refusal"] is only ever set True by
+    handle_refusal (the dedicated out_of_scope path). But
+    synthesize_answer's own LLM call can independently land on the
+    exact same REFUSAL_STRING via the simple/multi_hop path too (the
+    model honestly declining per SAFETY_RULES rather than the graph
+    routing there) -- verified live: a query classified "simple"
+    produced REFUSAL_STRING as its answer with state["refusal"]
+    still False. A caller trusting only state["refusal"] would
+    wrongly read that as "the system answered". So the final
+    refusal flag is the OR of the graph's own flag and a direct
+    text comparison against REFUSAL_STRING, regardless of which
+    path produced it.
+
     Returns:
         SecureOpsAnswer with sources_used computed from citations.
     """
@@ -651,13 +665,21 @@ def run_agent(query: str, llm_router: LLMRouter, retrieval_fn: Callable):
     graph = build_agent_graph(llm_router, retrieval_fn)
     final_state = graph.invoke(initial_state)
 
-    return SecureOpsAnswer(
-        answer=final_state.get("answer")
+    answer_text = (
+        final_state.get("answer")
         or final_state.get("clarification_question")
-        or "",
+        or ""
+    )
+    is_refusal = (
+        final_state.get("refusal", False)
+        or answer_text.strip() == REFUSAL_STRING
+    )
+
+    return SecureOpsAnswer(
+        answer=answer_text,
         citations=final_state.get("citations", []),
         confidence=final_state.get("confidence", 0.0),
-        refusal=final_state.get("refusal", False),
+        refusal=is_refusal,
         query_type=final_state.get("query_type", "simple"),
         sources_used=[c.doc for c in final_state.get("citations", [])],
     )
