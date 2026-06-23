@@ -1,4 +1,4 @@
-google-generativeai
+google-genai
 huggingface-hub
 langgraph
 langchain-core

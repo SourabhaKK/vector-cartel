@@ -2,9 +2,16 @@
 llm.py — LLM client layer for SecureOps Assistant.
 
 Three classes:
-  GeminiClient      — primary LLM, Gemini 1.5 Flash, free tier
+  GeminiClient      — primary LLM, Gemini 2.5 Flash, free tier
   HuggingFaceClient — fallback LLM, Mistral-7B-Instruct
   LLMRouter         — orchestrates primary-then-fallback chain
+
+SDK NOTE:
+Uses the current google-genai SDK (genai.Client(...).models.generate_content(...)),
+not the older, now-deprecated google-generativeai SDK
+(genai.configure(...) + genai.GenerativeModel(...)). The official
+hackathon starter notebook already uses google-genai + gemini-2.5-flash;
+this module was migrated to match.
 
 RATE LIMIT DESIGN:
 Gemini free tier allows 15 requests per minute. GeminiClient
@@ -35,7 +42,7 @@ import random
 import time
 from typing import Any, Dict, Optional
 
-import google.generativeai as genai
+from google import genai
 import requests
 
 logger = logging.getLogger(__name__)
@@ -92,10 +99,10 @@ def _strip_markdown_json_fence(text: str) -> str:
 
 
 class GeminiClient:
-    def __init__(self, api_key: str, model: str = "gemini-1.5-flash") -> None:
+    def __init__(self, api_key: str, model: str = "gemini-2.5-flash") -> None:
         self.api_key = api_key
         self.model = model
-        genai.configure(api_key=api_key)
+        self.client = genai.Client(api_key=api_key)
         self._call_timestamps: list[float] = []
         self._rpm_limit = 15
 
@@ -103,7 +110,7 @@ class GeminiClient:
         self, system_prompt: str, user_query: str, max_tokens: int = 1024
     ) -> str:
         """
-        Generates a response from Gemini 1.5 Flash.
+        Generates a response from Gemini 2.5 Flash.
 
         Args:
             system_prompt: The full system prompt (rules + context).
@@ -125,14 +132,14 @@ class GeminiClient:
 
         for attempt in range(1, 4):
             try:
-                model = genai.GenerativeModel(
-                    self.model,
-                    generation_config={
+                response = self.client.models.generate_content(
+                    model=self.model,
+                    contents=contents,
+                    config={
                         "temperature": 0.0,
                         "max_output_tokens": max_tokens,
                     },
                 )
-                response = model.generate_content(contents)
                 self._call_timestamps.append(time.time())
                 return response.text
             except Exception:

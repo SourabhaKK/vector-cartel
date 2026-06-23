@@ -4,10 +4,10 @@ import pytest
 def test_gemini_client_init_stores_config():
     from src.llm import GeminiClient
 
-    client = GeminiClient(api_key="fake-key", model="gemini-1.5-flash")
+    client = GeminiClient(api_key="fake-key", model="gemini-2.5-flash")
 
     assert client.api_key == "fake-key"
-    assert client.model == "gemini-1.5-flash"
+    assert client.model == "gemini-2.5-flash"
 
 
 def test_gemini_client_default_model():
@@ -15,29 +15,29 @@ def test_gemini_client_default_model():
 
     client = GeminiClient(api_key="fake-key")
 
-    assert client.model == "gemini-1.5-flash"
+    assert client.model == "gemini-2.5-flash"
 
 
 def test_gemini_generate_calls_api_with_temperature_zero(mocker):
     from src.llm import GeminiClient
 
     mock_genai = mocker.patch("src.llm.genai")
-    mock_model = mock_genai.GenerativeModel.return_value
-    mock_model.generate_content.return_value.text = "test response"
+    mock_client = mock_genai.Client.return_value
+    mock_client.models.generate_content.return_value.text = "test response"
 
     client = GeminiClient(api_key="fake-key")
     client.generate("system prompt", "user query")
 
-    _, kwargs = mock_genai.GenerativeModel.call_args
-    assert kwargs["generation_config"]["temperature"] == 0.0
+    _, kwargs = mock_client.models.generate_content.call_args
+    assert kwargs["config"]["temperature"] == 0.0
 
 
 def test_gemini_generate_returns_response_text(mocker):
     from src.llm import GeminiClient
 
     mock_genai = mocker.patch("src.llm.genai")
-    mock_model = mock_genai.GenerativeModel.return_value
-    mock_model.generate_content.return_value.text = "Hello answer"
+    mock_client = mock_genai.Client.return_value
+    mock_client.models.generate_content.return_value.text = "Hello answer"
 
     client = GeminiClient(api_key="fake-key")
     result = client.generate("system prompt", "user query")
@@ -49,24 +49,24 @@ def test_gemini_generate_passes_max_tokens(mocker):
     from src.llm import GeminiClient
 
     mock_genai = mocker.patch("src.llm.genai")
-    mock_model = mock_genai.GenerativeModel.return_value
-    mock_model.generate_content.return_value.text = "test response"
+    mock_client = mock_genai.Client.return_value
+    mock_client.models.generate_content.return_value.text = "test response"
 
     client = GeminiClient(api_key="fake-key")
     client.generate("sys", "query", max_tokens=512)
 
-    _, kwargs = mock_genai.GenerativeModel.call_args
-    assert kwargs["generation_config"]["max_output_tokens"] == 512
+    _, kwargs = mock_client.models.generate_content.call_args
+    assert kwargs["config"]["max_output_tokens"] == 512
 
 
 def test_exponential_backoff_sleep_durations(mocker):
     from src.llm import GeminiClient
 
     mock_genai = mocker.patch("src.llm.genai")
-    mock_model = mock_genai.GenerativeModel.return_value
+    mock_client = mock_genai.Client.return_value
     success_response = mocker.Mock()
     success_response.text = "test response"
-    mock_model.generate_content.side_effect = [
+    mock_client.models.generate_content.side_effect = [
         Exception("429 rate limit exceeded"),
         Exception("429 rate limit exceeded"),
         success_response,
@@ -89,8 +89,8 @@ def test_max_retries_exceeded_after_three_attempts(mocker):
     from src.llm import GeminiClient, MaxRetriesExceeded
 
     mock_genai = mocker.patch("src.llm.genai")
-    mock_model = mock_genai.GenerativeModel.return_value
-    mock_model.generate_content.side_effect = Exception("429 rate limit exceeded")
+    mock_client = mock_genai.Client.return_value
+    mock_client.models.generate_content.side_effect = Exception("429 rate limit exceeded")
     mocker.patch("src.llm.time.sleep")
 
     client = GeminiClient(api_key="fake-key")
@@ -98,17 +98,17 @@ def test_max_retries_exceeded_after_three_attempts(mocker):
     with pytest.raises(MaxRetriesExceeded):
         client.generate("sys", "query")
 
-    assert mock_model.generate_content.call_count == 3
+    assert mock_client.models.generate_content.call_count == 3
 
 
 def test_rate_limit_error_when_rpm_ceiling_exceeded(mocker):
     from src.llm import GeminiClient, RateLimitError
 
     mock_genai = mocker.patch("src.llm.genai")
-    mock_model = mock_genai.GenerativeModel.return_value
+    mock_client = mock_genai.Client.return_value
     success_response = mocker.Mock()
     success_response.text = "test response"
-    mock_model.generate_content.return_value = success_response
+    mock_client.models.generate_content.return_value = success_response
     mocker.patch("src.llm.time.time", return_value=1000.0)
 
     client = GeminiClient(api_key="fake-key")
