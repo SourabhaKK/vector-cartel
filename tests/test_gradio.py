@@ -129,10 +129,21 @@ def test_setup_reads_gemini_api_key_from_env(mocker, monkeypatch):
 def test_setup_falls_back_to_stub_retrieval_when_rag_layer_missing(
     mocker, monkeypatch
 ):
+    """
+    Forces ImportError on `from src.retrieval import build_retrieval_fn`
+    via the standard sys.modules-entry-set-to-None trick, rather than
+    relying on src/retrieval.py being ambiently absent. Now that
+    rag-layer has merged and src/retrieval.py genuinely exists, this
+    is the only deterministic way to exercise setup()'s fallback path
+    -- without this, the test would (correctly) pick up the real
+    build_retrieval_fn and fail, since the scenario it's meant to
+    simulate ("rag-layer not merged") no longer reflects reality.
+    """
     monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
     monkeypatch.setenv("HF_API_KEY", "fake-hf-key")
     mocker.patch("src.gradio_demo.GeminiClient")
     mocker.patch("src.gradio_demo.HuggingFaceClient")
+    mocker.patch.dict("sys.modules", {"src.retrieval": None})
 
     from src.gradio_demo import setup
 
