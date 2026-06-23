@@ -191,14 +191,16 @@ def test_huggingface_client_init_stores_config():
     client = HuggingFaceClient(api_key="fake-hf-key")
 
     assert client.api_key == "fake-hf-key"
-    assert "mistral" in client.model.lower()
+    assert "qwen" in client.model.lower()
 
 
 def test_huggingface_generate_calls_inference_api(mocker):
     from src.llm import HuggingFaceClient
 
     mock_post = mocker.patch("src.llm.requests.post")
-    mock_post.return_value.json.return_value = [{"generated_text": "HF answer"}]
+    mock_post.return_value.json.return_value = {
+        "choices": [{"message": {"content": "HF answer"}}]
+    }
 
     client = HuggingFaceClient(api_key="fake-hf-key")
     client.generate("system prompt", "user query")
@@ -207,11 +209,37 @@ def test_huggingface_generate_calls_inference_api(mocker):
     assert "huggingface.co" in called_url
 
 
+def test_huggingface_generate_uses_router_not_decommissioned_domain(mocker):
+    """
+    Regression test: api-inference.huggingface.co was decommissioned
+    by HuggingFace (verified: DNS resolution fails entirely for that
+    hostname). The current routing endpoint is router.huggingface.co.
+    A substring check for just "huggingface.co" wouldn't catch a
+    silent revert to the dead domain since it's a substring of the
+    live one too -- this test checks the specific live host.
+    """
+    from src.llm import HuggingFaceClient
+
+    mock_post = mocker.patch("src.llm.requests.post")
+    mock_post.return_value.json.return_value = {
+        "choices": [{"message": {"content": "HF answer"}}]
+    }
+
+    client = HuggingFaceClient(api_key="fake-hf-key")
+    client.generate("system prompt", "user query")
+
+    called_url = mock_post.call_args[0][0]
+    assert called_url.startswith("https://router.huggingface.co/")
+    assert "api-inference.huggingface.co" not in called_url
+
+
 def test_huggingface_generate_returns_text(mocker):
     from src.llm import HuggingFaceClient
 
     mock_post = mocker.patch("src.llm.requests.post")
-    mock_post.return_value.json.return_value = [{"generated_text": "HF answer"}]
+    mock_post.return_value.json.return_value = {
+        "choices": [{"message": {"content": "HF answer"}}]
+    }
 
     client = HuggingFaceClient(api_key="fake-hf-key")
     result = client.generate("system prompt", "user query")

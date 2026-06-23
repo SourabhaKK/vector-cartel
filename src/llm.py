@@ -217,7 +217,7 @@ class GeminiClient:
 
 class HuggingFaceClient:
     def __init__(
-        self, api_key: str, model: str = "mistralai/Mistral-7B-Instruct-v0.1"
+        self, api_key: str, model: str = "Qwen/Qwen2.5-7B-Instruct"
     ) -> None:
         self.api_key = api_key
         self.model = model
@@ -244,13 +244,41 @@ class HuggingFaceClient:
         Called by: src/agent.py nodes, via LLMRouter as the
         fallback provider when GeminiClient raises
         MaxRetriesExceeded.
+
+        URL/PAYLOAD/MODEL NOTE: HuggingFace decommissioned
+        api-inference.huggingface.co entirely (verified: DNS resolution
+        fails for that hostname). router.huggingface.co is the current
+        routing endpoint. The classic {"inputs": ...} task-based payload
+        only works for models still mapped to HF's own "hf-inference"
+        provider -- almost nothing is anymore; models are now served via
+        third-party providers (featherless-ai, together, novita, ...)
+        on the "conversational" task, reachable only via the
+        OpenAI-compatible /v1/chat/completions shape used here.
+
+        The original default model (mistralai/Mistral-7B-Instruct-v0.1,
+        served only via featherless-ai) returned a real 400
+        "not supported by any provider you have enabled" with a real
+        key -- that provider wasn't enabled for the account tested.
+        Qwen/Qwen2.5-7B-Instruct (served via the "together" provider)
+        was verified end-to-end with a real key and a real call through
+        this exact method: HTTP 200, correct response text extracted.
+        Provider enablement is per-account, so if this breaks again,
+        check https://huggingface.co/settings/inference-providers and/or
+        pick another model from its inferenceProviderMapping.
         """
-        url = f"https://api-inference.huggingface.co/models/{self.model}"
+        url = "https://router.huggingface.co/v1/chat/completions"
         headers = {"Authorization": f"Bearer {self.api_key}"}
-        payload = {"inputs": f"{system_prompt}\n\n{user_query}"}
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_query},
+            ],
+            "max_tokens": max_tokens,
+        }
 
         response = requests.post(url, headers=headers, json=payload)
-        return response.json()[0]["generated_text"]
+        return response.json()["choices"][0]["message"]["content"]
 
 
 class LLMRouter:
