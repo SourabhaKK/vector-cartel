@@ -176,6 +176,32 @@ def _rerank(query: str, chunks: List[Dict[str, Any]], reranker) -> List[Dict[str
     return sorted(chunks, key=lambda c: c["score"], reverse=True)
 
 
+def _matches_metadata_filter(
+    chunk: Dict[str, Any], metadata_filter: Optional[Dict[str, Any]]
+) -> bool:
+    """True if every key/value pair in ``metadata_filter`` matches the
+    chunk's metadata (case-insensitive for string values). No filter
+    (``None`` or ``{}``) matches everything.
+
+    e.g. {"vendor": "Siemens"} keeps only chunks whose metadata["vendor"]
+    equals "Siemens" (ignoring case) -- CISA advisory chunks carry
+    vendor/date/cvss/cves/sectors metadata (see src/index.py); NIST/ATT&CK
+    chunks generally won't have a "vendor" key and are excluded by a
+    vendor filter, which is the expected behaviour.
+    """
+    if not metadata_filter:
+        return True
+    meta = chunk.get("metadata", {})
+    for key, expected in metadata_filter.items():
+        actual = meta.get(key)
+        if isinstance(actual, str) and isinstance(expected, str):
+            if actual.lower() != expected.lower():
+                return False
+        elif actual != expected:
+            return False
+    return True
+
+
 # ==============================================================================
 # SECTION 4 — Retrieval function builder (contract entry point)
 # ==============================================================================
@@ -189,6 +215,7 @@ def build_retrieval_fn(
     fuse_top: int = FUSE_TOP,
     final_k: int = FINAL_K,
     min_score: Optional[float] = None,
+    metadata_filter: Optional[Dict[str, Any]] = None,
 ) -> Callable[[str], List[Dict[str, Any]]]:
     """Build a ``retrieval_fn(query) -> List[ChunkDict]`` matching the contract.
 
@@ -196,6 +223,15 @@ def build_retrieval_fn(
     ``min_score`` (default None) optionally hard-filters chunks below a score; by
     default all ``final_k`` are returned and the agent decides on confidence via
     ``RETRIEVAL_CONFIDENCE_THRESHOLD``.
+
+    ``metadata_filter`` (default None) optionally restricts results to chunks
+    whose metadata matches every key/value pair given, e.g.
+    ``metadata_filter={"vendor": "Siemens"}`` or ``{"date": "2026-04-21"}``.
+    This is construction-time configuration (one retrieval_fn = one filter),
+    not a per-query argument -- the RetrievalFn contract fixes the call
+    signature to ``retrieval_fn(query: str)``, so a caller wanting a
+    different filter builds a second retrieval_fn with build_retrieval_fn(...,
+    metadata_filter=...).
     """
     idx = indexes if indexes is not None else load_indexes()
     rer = reranker if reranker is not None else get_reranker()
@@ -213,8 +249,11 @@ def build_retrieval_fn(
                 return []
 
             # reconstruct full ChunkDicts (fresh copies so we don't mutate the
-            # cached store when we write the score)
+            # cached store when we write the score), then apply the metadata
+            # filter BEFORE reranking so the reranker only scores candidates
+            # that are actually eligible to be returned.
             candidates = [dict(idx.id_to_chunk[cid]) for cid in fused_ids if cid in idx.id_to_chunk]
+            candidates = [c for c in candidates if _matches_metadata_filter(c, metadata_filter)]
             reranked = _rerank(query, candidates, rer)
 
             top = reranked[:final_k]
