@@ -176,6 +176,34 @@ def _rerank(query: str, chunks: List[Dict[str, Any]], reranker) -> List[Dict[str
     return sorted(chunks, key=lambda c: c["score"], reverse=True)
 
 
+def _dedupe_candidates_by_text(chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Drop later chunks whose body text exactly duplicates an earlier one.
+
+    MITRE ATT&CK mitigation text is frequently copy-pasted verbatim across
+    dozens of technique IDs (e.g. the same "Human User Authentication"
+    paragraph attached to 20+ different T-codes). Each occurrence is
+    wrapped in a different per-technique ``[MITRE ATT&CK Txxxx - ... ]``
+    header, so the chunks are NOT identical strings even though the
+    dedup-worthy content (everything after the header) is -- comparing
+    full text would silently fail to catch this. Left undeduped, these
+    near-identical vectors flood the fused candidate pool by sheer
+    repetition and crowd out chunks with unique, on-topic content. Keeping
+    only the first (best fused-rank) occurrence of each body restores
+    diversity to the pool without discarding any unique information --
+    duplicates carry no information beyond the first occurrence.
+    """
+    seen: set = set()
+    deduped: List[Dict[str, Any]] = []
+    for c in chunks:
+        text = c.get("text", "")
+        body = text.split("\n\n", 1)[-1] if "\n\n" in text else text
+        if body in seen:
+            continue
+        seen.add(body)
+        deduped.append(c)
+    return deduped
+
+
 def _matches_metadata_filter(
     chunk: Dict[str, Any], metadata_filter: Optional[Dict[str, Any]]
 ) -> bool:
@@ -254,6 +282,7 @@ def build_retrieval_fn(
             # that are actually eligible to be returned.
             candidates = [dict(idx.id_to_chunk[cid]) for cid in fused_ids if cid in idx.id_to_chunk]
             candidates = [c for c in candidates if _matches_metadata_filter(c, metadata_filter)]
+            candidates = _dedupe_candidates_by_text(candidates)
             reranked = _rerank(query, candidates, rer)
 
             top = reranked[:final_k]

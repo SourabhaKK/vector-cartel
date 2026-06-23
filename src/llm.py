@@ -146,6 +146,12 @@ class GeminiClient:
                         # Disabling it keeps the full max_output_tokens
                         # budget for the actual visible answer.
                         "thinking_config": {"thinking_budget": 0},
+                        # temperature=0.0 alone does not guarantee
+                        # bit-identical output on Gemini's serving
+                        # infrastructure (verified: classify_query
+                        # classified the same query inconsistently across
+                        # runs). A fixed seed tightens determinism further.
+                        "seed": 0,
                     },
                 )
                 self._call_timestamps.append(time.time())
@@ -275,6 +281,12 @@ class HuggingFaceClient:
                 {"role": "user", "content": user_query},
             ],
             "max_tokens": max_tokens,
+            # Pinned to match GeminiClient's deterministic temperature=0.0.
+            # Verified live: without this, the same query through the HF
+            # fallback path produced a correct cited answer on one run and
+            # the literal refusal string on the next, purely from sampling
+            # randomness.
+            "temperature": 0.0,
         }
 
         response = requests.post(url, headers=headers, json=payload)

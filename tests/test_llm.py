@@ -81,6 +81,28 @@ def test_gemini_generate_disables_thinking_budget(mocker):
     assert kwargs["config"]["thinking_config"]["thinking_budget"] == 0
 
 
+def test_gemini_generate_pins_a_fixed_seed(mocker):
+    """
+    Regression test: classify_query was observed to classify the same
+    query inconsistently (out_of_scope vs simple) across runs despite
+    temperature=0.0 already being set -- temperature=0 reduces but does
+    not guarantee bit-identical sampling on Gemini's serving
+    infrastructure. Pinning a fixed seed is the standard additional lever
+    for tightening determinism further.
+    """
+    from src.llm import GeminiClient
+
+    mock_genai = mocker.patch("src.llm.genai")
+    mock_client = mock_genai.Client.return_value
+    mock_client.models.generate_content.return_value.text = "test response"
+
+    client = GeminiClient(api_key="fake-key")
+    client.generate("system prompt", "user query")
+
+    _, kwargs = mock_client.models.generate_content.call_args
+    assert kwargs["config"]["seed"] == 0
+
+
 def test_exponential_backoff_sleep_durations(mocker):
     from src.llm import GeminiClient
 
@@ -231,6 +253,32 @@ def test_huggingface_generate_uses_router_not_decommissioned_domain(mocker):
     called_url = mock_post.call_args[0][0]
     assert called_url.startswith("https://router.huggingface.co/")
     assert "api-inference.huggingface.co" not in called_url
+
+
+def test_huggingface_generate_pins_temperature_zero(mocker):
+    """
+    Regression test: HuggingFaceClient.generate() was missing a temperature
+    parameter entirely, unlike GeminiClient which pins temperature=0.0.
+    Verified live: the same query through the HF fallback path produced a
+    correct cited answer on one run and the literal refusal string on the
+    next, purely from sampling randomness -- this is the same root cause
+    as the classify_query non-determinism (issue #17), surfacing on the
+    free-text synthesis path too whenever Gemini's quota forces fallback.
+    Pinning temperature=0.0 makes the fallback deterministic like the
+    primary provider already is.
+    """
+    from src.llm import HuggingFaceClient
+
+    mock_post = mocker.patch("src.llm.requests.post")
+    mock_post.return_value.json.return_value = {
+        "choices": [{"message": {"content": "HF answer"}}]
+    }
+
+    client = HuggingFaceClient(api_key="fake-hf-key")
+    client.generate("system prompt", "user query")
+
+    _, kwargs = mock_post.call_args
+    assert kwargs["json"]["temperature"] == 0.0
 
 
 def test_huggingface_generate_returns_text(mocker):

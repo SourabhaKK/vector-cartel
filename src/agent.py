@@ -55,6 +55,7 @@ from src.contracts import (
     get_chunk_section,
 )
 from src.llm import LLMRouter, SecureOpsLLMError
+from src.security import InputScanner
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +63,8 @@ REFUSAL_STRING = (
     "I don't have enough information in the corpus to answer "
     "this question."
 )
+
+INPUT_BLOCKED_MESSAGE_TEMPLATE = "Query blocked: {reason}"
 
 CLARIFICATION_FALLBACK_QUESTION = (
     "Could you provide more detail about what you're asking?"
@@ -73,6 +76,49 @@ SYNTHESIS_FAILURE_MESSAGE = (
 )
 
 CITATION_PATTERN = re.compile(r"\[Source:\s*([^|]+?)\s*\|\s*([^\]]+?)\]")
+
+
+def input_gate(state: AgentState, scanner) -> Dict:
+    """
+    Security gate: scans the raw query for prompt injection before it
+    reaches any LLM call.
+
+    Reads: state["query"]
+    Returns: {"refusal": True, "answer": ...} if blocked, else {} (no
+             state change, proceeds to classify_query).
+    LLM calls: 0
+    Prompt calls: none
+
+    Matches the InputScannerProtocol contract in src.contracts: scanner
+    must expose scan(query: str) -> Tuple[bool, Optional[str]] and never
+    raise. This node runs BEFORE classify_query, so a blocked query
+    never reaches the LLM at all -- unlike the out_of_scope refusal
+    path, which still spends one classify_query LLM call before
+    refusing.
+
+    Called by: entry point of build_agent_graph, routes via
+    route_by_input_scan to either "refuse" (END) or "classify".
+    """
+    is_clean, reason = scanner.scan(state["query"])
+    if not is_clean:
+        return {
+            "refusal": True,
+            "answer": INPUT_BLOCKED_MESSAGE_TEMPLATE.format(reason=reason),
+        }
+    return {}
+
+
+def route_by_input_scan(state: AgentState) -> str:
+    """
+    Dispatches based on input_gate's verdict.
+
+    Reads: state["refusal"]
+    Returns: "blocked" or "clean"
+    LLM calls: 0
+
+    Called by: LangGraph conditional edge after input_gate.
+    """
+    return "blocked" if state.get("refusal") else "clean"
 
 
 def classify_query(state: AgentState, llm: LLMRouter) -> Dict:
@@ -473,10 +519,22 @@ VERIFY_ROUTING_MAP = {
     "insufficient": "rewrite",
 }
 
+INPUT_SCAN_ROUTING_MAP = {
+    "blocked": END,
+    "clean": "classify",
+}
+
 VALIDATE_ROUTING_MAP = {
     "passed": END,
     "retry": "increment_retry",
 }
+
+
+def _make_input_gate_node(scanner) -> Callable:
+    def node(state: AgentState) -> Dict:
+        return input_gate(state, scanner)
+
+    return node
 
 
 def _make_classify_node(llm_router: LLMRouter) -> Callable:
@@ -515,12 +573,16 @@ def _make_retrieve_node(retrieval_fn: Callable) -> Callable:
 
 
 def build_agent_graph(
-    llm_router: LLMRouter, retrieval_fn: Callable = None
+    llm_router: LLMRouter, retrieval_fn: Callable = None, scanner=None
 ) -> CompiledStateGraph:
     """
     Builds and compiles the SecureOps Assistant LangGraph.
 
     TOPOLOGY:
+      input_gate --[route_by_input_scan]-->
+        "blocked"       -> refuse -> END
+        "clean"         -> classify
+
       classify --[route_by_query_type]-->
         "simple"        -> retrieve -> verify -> synthesize -> validate
         "multi_hop"     -> decompose -> retrieve -> verify ->
@@ -553,12 +615,17 @@ def build_agent_graph(
                     will use (classify, decompose, clarify, synthesize).
         retrieval_fn: Optional. Matches the RetrievalFn protocol
                      from src.contracts. Falls back to stub if None.
+        scanner: Optional. Matches InputScannerProtocol from
+                src.contracts (scan(query) -> (is_clean, reason)).
+                Falls back to a real InputScanner() if None -- the
+                gate is always on by default, not opt-in.
 
     Returns:
         A compiled LangGraph CompiledStateGraph with .invoke(state).
     """
     graph = StateGraph(AgentState)
 
+    graph.add_node("input_gate", _make_input_gate_node(scanner or InputScanner()))
     graph.add_node("classify", _make_classify_node(llm_router))
     graph.add_node("decompose", _make_decompose_node(llm_router))
     graph.add_node("refuse", handle_refusal)
@@ -584,7 +651,11 @@ def build_agent_graph(
     graph.add_node("validate", validate_citations)
     graph.add_node("increment_retry", increment_retry_count)
 
-    graph.set_entry_point("classify")
+    graph.set_entry_point("input_gate")
+
+    graph.add_conditional_edges(
+        "input_gate", route_by_input_scan, INPUT_SCAN_ROUTING_MAP
+    )
 
     graph.add_conditional_edges(
         "classify", route_by_query_type, CLASSIFY_ROUTING_MAP
