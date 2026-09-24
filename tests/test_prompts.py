@@ -204,6 +204,35 @@ def test_decomposition_prompt_includes_query():
     assert "my decomposition query" in result
 
 
+def test_citation_rule_does_not_contain_literal_placeholder_braces():
+    """
+    Regression test: SAFETY_RULES rule 1 originally read
+    "[Source: {doc} | {section}]" using {doc}/{section} as informal
+    placeholder syntax. Since this string is sent to the LLM verbatim
+    (it is not an f-string -- nothing ever substitutes those braces),
+    the model had no way to know they meant "insert the real value here"
+    and would sometimes echo the literal text "{doc} | {section}" into
+    its answer -- verified live: a real query produced citations reading
+    "[Source: {doc} | {section}]" instead of an actual document/section.
+    The rule must instruct substitution via a concrete worked example
+    instead of placeholder-looking syntax.
+    """
+    from src.prompts import SAFETY_RULES
+
+    citation_rule = next(r for r in SAFETY_RULES if "[Source:" in r)
+
+    assert "{doc}" not in citation_rule
+    assert "{section}" not in citation_rule
+
+
+def test_citation_rule_still_has_correct_format_prefix():
+    from src.prompts import build_system_prompt
+
+    result = build_system_prompt([NIST_CHUNK])
+
+    assert "Every factual claim must be followed by [Source:" in result
+
+
 def test_safety_rules_has_four_items():
     from src.prompts import SAFETY_RULES
 

@@ -338,7 +338,7 @@ def test_validate_citations_passes_when_overlap_sufficient():
     from src.agent import validate_citations
 
     state = make_state(
-        answer="Firewalls should segment OT networks",
+        answer="Firewalls should segment OT networks [Source: NIST SP 800-82 Rev 3 | 5.2.3]",
         retrieved_chunks=[NIST_CHUNK],
         retry_count=0,
     )
@@ -346,6 +346,30 @@ def test_validate_citations_passes_when_overlap_sufficient():
     result = validate_citations(state)
 
     assert result["validation_passed"] is True
+
+
+def test_validate_citations_fails_when_no_citation_marker_present():
+    """
+    Regression test: the HuggingFace fallback model (used when Gemini's
+    quota/rate-limit is exhausted) was observed live to sometimes produce
+    a fully grounded, on-topic answer with zero [Source: ...] markers at
+    all -- token overlap alone passed it through since the text content
+    genuinely echoed the retrieved chunk, but the brief's first
+    requirement is "grounded -- supported by retrieved documents, with
+    sources cited". An answer with no citation marker must fail
+    validation (and retry) regardless of how well it overlaps.
+    """
+    from src.agent import validate_citations
+
+    state = make_state(
+        answer="Firewalls should segment OT networks from IT networks.",
+        retrieved_chunks=[NIST_CHUNK],
+        retry_count=0,
+    )
+
+    result = validate_citations(state)
+
+    assert result["validation_passed"] is False
 
 
 def test_validate_citations_fails_when_overlap_insufficient():

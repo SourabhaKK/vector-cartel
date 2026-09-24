@@ -329,14 +329,26 @@ def validate_citations(state: AgentState) -> Dict:
     Skips the overlap check entirely for refusal answers — the
     refusal string is never "ungrounded", there's nothing to ground.
 
+    Requires at least one [Source: ...] citation marker in addition
+    to sufficient token overlap — verified live that the HuggingFace
+    fallback (used when Gemini's quota/rate-limit is exhausted) can
+    produce a fully on-topic, well-grounded-sounding answer with zero
+    citation markers at all. Token overlap alone passed that through;
+    the brief's first requirement is "grounded — supported by the
+    retrieved documents, with sources cited", so an uncited answer
+    must fail validation and retry regardless of overlap.
+
     Called by: synthesize_answer's downstream edge. Routes via
     route_by_validation to either END or increment_retry_count.
     """
     if state["answer"].strip() == REFUSAL_STRING:
         return {"validation_passed": True}
 
+    has_citation = bool(CITATION_PATTERN.search(state["answer"]))
     overlap = _token_overlap(state["answer"], state["retrieved_chunks"])
-    return {"validation_passed": overlap >= OUTPUT_GROUNDEDNESS_THRESHOLD}
+    return {
+        "validation_passed": has_citation and overlap >= OUTPUT_GROUNDEDNESS_THRESHOLD
+    }
 
 
 def increment_retry_count(state: AgentState) -> Dict:

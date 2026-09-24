@@ -32,8 +32,14 @@ logger = logging.getLogger(__name__)
 
 
 SAFETY_RULES: List[str] = [
-    "Every factual claim must be followed by "
-    "[Source: {doc} | {section}] immediately after the claim.",
+    "Every factual claim must be followed by [Source: ...] immediately "
+    "after the claim, copying the exact source and section attribute "
+    "values shown for the document the claim came from -- for example, a "
+    'document with source attribute "NIST SP 800-82 Rev. 3" and section '
+    'attribute "6.2.10" should be cited as '
+    "[Source: NIST SP 800-82 Rev. 3 | 6.2.10]. Never write the literal "
+    "words \"source\" or \"section\" in the citation -- always substitute "
+    "the real document name and section identifier.",
 
     "Never state anything not present in the retrieved context below. "
     "Do not use your training knowledge to fill gaps.",
