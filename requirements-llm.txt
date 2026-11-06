@@ -3,7 +3,7 @@ huggingface-hub
 langgraph
 langchain-core
 langchain-google-genai
-pydantic>=2.0
+pydantic>=2.14.2
 pytest
 pytest-asyncio
 pytest-mock
