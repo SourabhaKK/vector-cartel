@@ -25,9 +25,6 @@ jobs:
 
   typecheck:
     runs-on: ubuntu-latest
-    # Informational for now: mypy reports 13 existing errors in 5 files.
-    # Remove continue-on-error once they are fixed.
-    continue-on-error: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -36,7 +33,10 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install mypy types-requests types-PyYAML
+      # Informational for now: mypy reports 13 existing errors in 5 files, so the
+      # step may fail without failing the job. Remove continue-on-error once fixed.
       - run: mypy src --ignore-missing-imports
+        continue-on-error: true
 
   test:
     runs-on: ubuntu-latest
