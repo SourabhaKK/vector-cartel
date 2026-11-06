@@ -1,0 +1,55 @@
+name: CI
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.11"
+      - run: pip install ruff
+      # Errors only (syntax errors, undefined names); no style rules are enforced.
+      - run: ruff check --select E9,F63,F7,F82 .
+
+  typecheck:
+    runs-on: ubuntu-latest
+    # Informational for now: mypy reports 13 existing errors in 5 files.
+    # Remove continue-on-error once they are fixed.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.11"
+      - run: pip install mypy types-requests types-PyYAML
+      - run: mypy src --ignore-missing-imports
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.11"
+          cache: pip
+      # CPU-only torch keeps the install small; the rest comes from requirements.
+      - run: pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu
+      - run: grep -v '^torch' requirements.txt > /tmp/requirements-no-torch.txt
+      - run: pip install -r /tmp/requirements-no-torch.txt -r requirements-llm.txt pytest pytest-mock
+      - run: python -m pytest tests/ -q
