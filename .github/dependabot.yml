@@ -12,6 +12,8 @@ updates:
           - "minor"
           - "patch"
     ignore:
+      - dependency-name: "torch"
+      - dependency-name: "transformers"
       - dependency-name: "*"
         update-types:
           - "version-update:semver-major"
