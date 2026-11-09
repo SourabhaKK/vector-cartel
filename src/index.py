@@ -325,6 +325,8 @@ def load_indexes(index_dir: str | Path = INDEX_DIR) -> Indexes:
     collection = client.get_collection(COLLECTION_NAME)
 
     with open(bm25_file, "rb") as fh:
+        # pickle can run code when loaded: only read an index this project built itself
+        # (the file written by build_index), never one from outside.
         store = pickle.load(fh)
 
     if store.get("embed_model") != EMBED_MODEL:
